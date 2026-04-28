@@ -31,6 +31,7 @@ type ProfilesPage struct {
 	draft         profileDraft
 	confirmDelete bool
 	confirmForm   *huh.Form
+	confirmAnswer *bool // heap-allocated so address remains valid across Update copies
 
 	// Status feedback.
 	flash string
@@ -180,8 +181,6 @@ func (p ProfilesPage) detailView() string {
 	)
 }
 
-// Stubs to be filled in by tasks 1.6, 1.7, 1.8.
-
 func (p ProfilesPage) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, p.listKeys.New):
@@ -261,6 +260,7 @@ func (p ProfilesPage) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if msg.String() == "esc" {
 		p.confirmDelete = false
 		p.confirmForm = nil
+		p.confirmAnswer = nil
 		return p, nil
 	}
 
@@ -270,17 +270,20 @@ func (p ProfilesPage) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	if p.confirmForm != nil && p.confirmForm.State == huh.StateCompleted {
-		// huh stored the bool in a local in askDeleteSelected; we cannot reach it.
-		// Workaround: re-extract via the form's group, or — simpler — we treat
-		// completion as confirmation. Cancel goes through esc above.
 		id := p.draft.ID
+		affirmative := p.confirmAnswer != nil && *p.confirmAnswer
+		p.confirmDelete = false
+		p.confirmForm = nil
+		p.confirmAnswer = nil
+		if !affirmative {
+			p.flash = "delete cancelled"
+			return p, nil
+		}
 		if err := p.store.Delete(id); err != nil {
 			p.flash = "delete failed: " + err.Error()
 		} else {
 			p.flash = "deleted " + id
 		}
-		p.confirmDelete = false
-		p.confirmForm = nil
 		return p, p.loadCmd()
 	}
 	return p, cmd
@@ -342,18 +345,19 @@ func (p ProfilesPage) askDeleteSelected() (tea.Model, tea.Cmd) {
 		return p, nil
 	}
 	id := sel.p.ID
-	confirm := false
+	answer := false
+	p.confirmAnswer = &answer
 	form := huh.NewForm(huh.NewGroup(
 		huh.NewConfirm().
 			Title("Delete profile " + id + "?").
 			Affirmative("Delete").
 			Negative("Cancel").
-			Value(&confirm),
+			Value(p.confirmAnswer),
 	)).WithShowHelp(false).WithShowErrors(false)
 
 	p.confirmForm = form
 	p.confirmDelete = true
-	// Stash the id+answer pointer so updateConfirm can act on submit.
+	// Stash the id so updateConfirm can act on submit.
 	p.draft = profileDraft{ID: id} // reuse draft.ID just to carry the id
 	return p, form.Init()
 }
