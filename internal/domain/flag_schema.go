@@ -11,19 +11,39 @@ const (
 	FlagTypeEnum
 )
 
-// FlagSpec describes a single llama-server flag (filled by LlamaHelpParser in slice 2).
+// FlagSpec describes a single llama-server flag.
 type FlagSpec struct {
-	Long       string
-	Short      string
+	Long       string   // canonical long name (without leading --), e.g. "ctx-size"
+	Short      string   // first short alias (without leading -), e.g. "c"; "" if absent
+	Aliases    []string // additional long aliases (without leading --)
 	Type       FlagType
 	EnumValues []string
 	Default    any
 	HelpText   string
-	Group      string // "essential" or "advanced"
+	Group      string // "common" | "sampling" | "example-specific" | "embedded"
 }
 
 // FlagSchema is the parsed --help output keyed by long name.
 type FlagSchema struct {
 	Version string
 	Flags   map[string]FlagSpec
+}
+
+// Lookup resolves a name (long, alias, or short) to a FlagSpec.
+// Returns the spec and true on hit.
+func (s FlagSchema) Lookup(name string) (FlagSpec, bool) {
+	if spec, ok := s.Flags[name]; ok {
+		return spec, true
+	}
+	for _, spec := range s.Flags {
+		if spec.Short == name {
+			return spec, true
+		}
+		for _, alias := range spec.Aliases {
+			if alias == name {
+				return spec, true
+			}
+		}
+	}
+	return FlagSpec{}, false
 }
