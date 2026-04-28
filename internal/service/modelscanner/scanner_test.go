@@ -102,3 +102,38 @@ func TestScanner_RecursiveAndIgnoresNonGGUF(t *testing.T) {
 		t.Fatalf("file events = %d, want 3 (got events: %#v)", count, events)
 	}
 }
+
+func TestScanner_EmitsProgressAndDone(t *testing.T) {
+	dirA := t.TempDir()
+	dirB := t.TempDir()
+	writeGGUFFile(t, filepath.Join(dirA, "a.gguf"), 1_000_000_000)
+	writeGGUFFile(t, filepath.Join(dirB, "b1.gguf"), 1_000_000_000)
+	writeGGUFFile(t, filepath.Join(dirB, "b2.gguf"), 1_000_000_000)
+
+	s := New()
+	ch, err := s.Scan(context.Background(), []string{dirA, dirB})
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := collect(ch)
+
+	progressByRoot := map[string]int{}
+	doneCount := 0
+	for _, e := range events {
+		switch e.Type {
+		case domain.ScanEventProgress:
+			progressByRoot[e.Root] = e.Count
+		case domain.ScanEventDone:
+			doneCount++
+		}
+	}
+	if progressByRoot[dirA] != 1 {
+		t.Errorf("progress[dirA] = %d, want 1", progressByRoot[dirA])
+	}
+	if progressByRoot[dirB] != 2 {
+		t.Errorf("progress[dirB] = %d, want 2", progressByRoot[dirB])
+	}
+	if doneCount != 1 {
+		t.Errorf("done events = %d, want 1", doneCount)
+	}
+}
