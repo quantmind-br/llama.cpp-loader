@@ -57,19 +57,6 @@ func defaultProfilesKeys() profilesKeyMap {
 	}
 }
 
-// profileDraft is the editor state, mapped from huh form back to a Profile on save.
-type profileDraft struct {
-	ID          string // immutable once created
-	Name        string
-	Description string
-	Model       string
-	NGL         string // strings — converted on save
-	CtxSize     string
-	Port        string
-	FlashAttn   bool
-	isNew       bool
-}
-
 // item adapts domain.Profile to bubbles/list.
 type item struct {
 	p domain.Profile
@@ -360,40 +347,4 @@ func (p ProfilesPage) askDeleteSelected() (tea.Model, tea.Cmd) {
 	// Stash the id so updateConfirm can act on submit.
 	p.draft = profileDraft{ID: id} // reuse draft.ID just to carry the id
 	return p, form.Init()
-}
-
-func argString(v any) string {
-	switch t := v.(type) {
-	case nil:
-		return ""
-	case string:
-		return t
-	case float64:
-		return strconv.FormatFloat(t, 'f', -1, 64)
-	case int:
-		return strconv.Itoa(t)
-	default:
-		return fmt.Sprintf("%v", t)
-	}
-}
-
-func argBool(v any) bool {
-	b, _ := v.(bool)
-	return b
-}
-
-func buildEditorForm(d *profileDraft) *huh.Form {
-	return huh.NewForm(
-		huh.NewGroup(
-			huh.NewInput().Title("Name").Value(&d.Name),
-			huh.NewInput().Title("Description").Value(&d.Description),
-			huh.NewInput().Title("Model path").Value(&d.Model),
-		),
-		huh.NewGroup(
-			huh.NewInput().Title("ngl (gpu layers)").Value(&d.NGL),
-			huh.NewInput().Title("ctx-size").Value(&d.CtxSize),
-			huh.NewInput().Title("port").Value(&d.Port),
-			huh.NewConfirm().Title("flash-attn?").Value(&d.FlashAttn).Affirmative("Yes").Negative("No"),
-		),
-	).WithShowHelp(true)
 }
