@@ -1,0 +1,74 @@
+package modelscanner
+
+import (
+	"bytes"
+	"context"
+	"encoding/binary"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/quantmind-br/llama-cpp-loader/internal/domain"
+)
+
+func writeGGUFFile(t *testing.T, path string, paramCount uint64) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	buf.WriteString("GGUF")
+	binary.Write(&buf, binary.LittleEndian, uint32(3))
+	binary.Write(&buf, binary.LittleEndian, uint64(0)) // tensors
+	binary.Write(&buf, binary.LittleEndian, uint64(1)) // metas
+	binary.Write(&buf, binary.LittleEndian, uint64(len("general.parameter_count")))
+	buf.WriteString("general.parameter_count")
+	binary.Write(&buf, binary.LittleEndian, uint32(10)) // uint64
+	binary.Write(&buf, binary.LittleEndian, paramCount)
+	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func collect(ch <-chan domain.ScanEvent) []domain.ScanEvent {
+	var out []domain.ScanEvent
+	for evt := range ch {
+		out = append(out, evt)
+	}
+	return out
+}
+
+func TestScanner_FindsSingleGGUF(t *testing.T) {
+	dir := t.TempDir()
+	writeGGUFFile(t, filepath.Join(dir, "Qwen-32B-Q4_K_M.gguf"), 32_000_000_000)
+
+	s := New()
+	ch, err := s.Scan(context.Background(), []string{dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := collect(ch)
+
+	var files []*domain.ModelFile
+	for _, e := range events {
+		if e.Type == domain.ScanEventFile {
+			files = append(files, e.File)
+		}
+	}
+	if len(files) != 1 {
+		t.Fatalf("got %d files, want 1: %#v", len(files), events)
+	}
+	got := files[0]
+	if got.Name != "Qwen-32B-Q4_K_M.gguf" {
+		t.Errorf("Name = %q", got.Name)
+	}
+	if got.Quant != "Q4_K_M" {
+		t.Errorf("Quant = %q, want Q4_K_M", got.Quant)
+	}
+	if got.Params != "32B" {
+		t.Errorf("Params = %q, want 32B", got.Params)
+	}
+	if got.SizeBytes <= 0 {
+		t.Errorf("SizeBytes = %d, want >0", got.SizeBytes)
+	}
+}
