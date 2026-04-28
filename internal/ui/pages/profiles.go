@@ -27,6 +27,7 @@ type ProfilesPage struct {
 
 	// Detail/edit state.
 	editing       bool
+	subTab        subTab
 	form          *huh.Form
 	draft         profileDraft
 	confirmDelete bool
@@ -38,12 +39,7 @@ type ProfilesPage struct {
 }
 
 type profilesKeyMap struct {
-	New       key.Binding
-	Save      key.Binding
-	Duplicate key.Binding
-	Delete    key.Binding
-	Edit      key.Binding
-	Cancel    key.Binding
+	New, Save, Duplicate, Delete, Edit, Cancel, Tab key.Binding
 }
 
 func defaultProfilesKeys() profilesKeyMap {
@@ -54,6 +50,7 @@ func defaultProfilesKeys() profilesKeyMap {
 		Delete:    key.NewBinding(key.WithKeys("x"), key.WithHelp("x", "del")),
 		Edit:      key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "edit")),
 		Cancel:    key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "cancel")),
+		Tab:       key.NewBinding(key.WithKeys("ctrl+t"), key.WithHelp("ctrl+t", "tab editor")),
 	}
 }
 
@@ -132,7 +129,8 @@ func (p ProfilesPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (p ProfilesPage) View() string {
 	if p.editing && p.form != nil {
-		return p.form.View()
+		header := theme.Title.Render(fmt.Sprintf("Editor — [%s]   ctrl+t to switch", p.subTab))
+		return lipgloss.JoinVertical(lipgloss.Left, header, p.form.View())
 	}
 	if p.confirmDelete && p.confirmForm != nil {
 		return p.confirmForm.View()
@@ -189,6 +187,14 @@ func (p ProfilesPage) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if msg.String() == "esc" {
 		p.editing = false
 		p.form = nil
+		return p, nil
+	}
+	if key.Matches(msg, p.listKeys.Tab) {
+		if p.subTab == subTabEssentials {
+			p.subTab = subTabAdvanced
+		} else {
+			p.subTab = subTabEssentials
+		}
 		return p, nil
 	}
 

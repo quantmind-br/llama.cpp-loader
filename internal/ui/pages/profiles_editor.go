@@ -8,6 +8,20 @@ import (
 	"github.com/charmbracelet/huh"
 )
 
+type subTab int
+
+const (
+	subTabEssentials subTab = iota
+	subTabAdvanced
+)
+
+func (s subTab) String() string {
+	if s == subTabEssentials {
+		return "Essentials"
+	}
+	return "Advanced"
+}
+
 // profileDraft is the editor's mutable state, mapped from huh form back to a Profile on save.
 type profileDraft struct {
 	ID          string // immutable once created
