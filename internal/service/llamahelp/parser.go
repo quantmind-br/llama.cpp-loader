@@ -8,6 +8,11 @@ import (
 	"github.com/quantmind-br/llama-cpp-loader/internal/domain"
 )
 
+// cacheTypeEnum lists the KV-cache quant types accepted by --cache-type-{k,v}.
+// The --help output renders these as TYPE; we hardcode the well-known set so
+// the editor can offer a select.
+var cacheTypeEnum = []string{"f32", "f16", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1"}
+
 var sectionHeaderRe = regexp.MustCompile(`^-{5}\s+(.+?)\s+params\s+-{5}$`)
 
 var (
@@ -34,6 +39,17 @@ var flagLineRe = regexp.MustCompile(`^(.*[^ ])\s{2,}(\S.*)$`)
 // defaultRe extracts "(default: X)" or ", default: X" — first occurrence wins.
 // The opening paren is optional because enums may use ", default: X" format.
 var defaultRe = regexp.MustCompile(`\(?default:\s*([^,)]+)`)
+
+// hardcodedFlagOverrides applies post-parse fixes for flags whose --help
+// representation does not expose enum values.
+func hardcodedFlagOverrides(spec domain.FlagSpec) domain.FlagSpec {
+	switch spec.Long {
+	case "cache-type-k", "cache-type-v", "cache-type-k-draft", "cache-type-v-draft":
+		spec.Type = domain.FlagTypeEnum
+		spec.EnumValues = cacheTypeEnum
+	}
+	return spec
+}
 
 // parseFlagLine parses a single help line into a FlagSpec. Returns false when
 // the line is not a flag definition (header, blank, continuation).
@@ -67,6 +83,7 @@ func parseFlagLine(line string) (domain.FlagSpec, bool) {
 	if d := extractDefault(descChunk); d != nil {
 		spec.Default = coerceDefault(spec.Type, d)
 	}
+	spec = hardcodedFlagOverrides(spec)
 	return spec, true
 }
 

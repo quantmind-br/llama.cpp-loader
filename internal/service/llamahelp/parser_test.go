@@ -193,3 +193,64 @@ func TestParseFlagLine_EnumPlaceholders(t *testing.T) {
 		})
 	}
 }
+
+func TestParseFlagLine_CacheTypeHardcodedEnum(t *testing.T) {
+	cases := []struct {
+		name string
+		line string
+		want domain.FlagSpec
+	}{
+		{
+			name: "cache-type-k",
+			line: "-ctk,  --cache-type-k TYPE              KV cache data type for K",
+			want: domain.FlagSpec{
+				Long:       "cache-type-k",
+				Short:      "ctk",
+				Type:       domain.FlagTypeEnum,
+				EnumValues: cacheTypeEnum,
+				HelpText:   "KV cache data type for K",
+			},
+		},
+		{
+			name: "cache-type-v",
+			line: "-ctv,  --cache-type-v TYPE              KV cache data type for V",
+			want: domain.FlagSpec{
+				Long:       "cache-type-v",
+				Short:      "ctv",
+				Type:       domain.FlagTypeEnum,
+				EnumValues: cacheTypeEnum,
+				HelpText:   "KV cache data type for V",
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := parseFlagLine(tc.line)
+			if !ok {
+				t.Fatalf("!ok for %q", tc.line)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("got %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestParseFlagLine_MultiAlias(t *testing.T) {
+	line := "-ngl,  --gpu-layers, --n-gpu-layers N   max. number of layers to store in VRAM (default: -1)"
+	got, ok := parseFlagLine(line)
+	if !ok {
+		t.Fatalf("!ok for %q", line)
+	}
+	want := domain.FlagSpec{
+		Long:     "n-gpu-layers",
+		Short:    "ngl",
+		Aliases:  []string{"gpu-layers"},
+		Type:     domain.FlagTypeInt,
+		Default:  -1,
+		HelpText: "max. number of layers to store in VRAM (default: -1)",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %+v, want %+v", got, want)
+	}
+}
