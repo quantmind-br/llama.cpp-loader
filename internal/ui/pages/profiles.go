@@ -4,6 +4,7 @@ package pages
 import (
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/list"
@@ -14,13 +15,15 @@ import (
 
 	"github.com/quantmind-br/llama-cpp-loader/internal/domain"
 	"github.com/quantmind-br/llama-cpp-loader/internal/service/profilestore"
+	"github.com/quantmind-br/llama-cpp-loader/internal/service/validator"
 	"github.com/quantmind-br/llama-cpp-loader/internal/ui/theme"
 )
 
 // ProfilesPage is the master-detail page for managing profiles.
 type ProfilesPage struct {
-	store  profilestore.Store
-	schema domain.FlagSchema
+	store     profilestore.Store
+	schema    domain.FlagSchema
+	validator validator.Validator
 
 	list      list.Model
 	listKeys  profilesKeyMap
@@ -83,6 +86,7 @@ func NewProfilesPage(store profilestore.Store, schema domain.FlagSchema) Profile
 	return ProfilesPage{
 		store:       store,
 		schema:      schema,
+		validator:   validator.New(),
 		advanced:    tbl,
 		advancedAll: tbl.Rows(),
 		list:        l,
@@ -148,11 +152,20 @@ func (p ProfilesPage) View() string {
 		} else {
 			body = p.advanced.View()
 		}
+		report := p.validator.Validate(p.previewProfile(), p.schema)
+		var lines []string
+		for _, e := range report.Errors {
+			lines = append(lines, theme.Error.Render("✗ "+e.Field+": "+e.Message))
+		}
+		for _, w := range report.Warnings {
+			lines = append(lines, theme.Warn.Render("! "+w.Field+": "+w.Message))
+		}
 		filterLine := ""
 		if p.subTab == subTabAdvanced {
-			filterLine = theme.Subtitle.Render(fmt.Sprintf("filter: %q  (/ to edit, esc to clear)", p.advancedFilter))
+			filterLine = theme.Subtitle.Render(fmt.Sprintf("filter: %q", p.advancedFilter))
 		}
-		return lipgloss.JoinVertical(lipgloss.Left, header, body, filterLine)
+		footer := strings.Join(lines, "\n")
+		return lipgloss.JoinVertical(lipgloss.Left, header, body, filterLine, footer)
 	}
 	if p.confirmDelete && p.confirmForm != nil {
 		return p.confirmForm.View()
@@ -304,6 +317,41 @@ func (p ProfilesPage) commitDraft() (tea.Model, tea.Cmd) {
 	p.editing = false
 	p.form = nil
 	return p, p.loadCmd()
+}
+
+// previewProfile builds a Profile from the current draft (without saving) for
+// the validator. Mirrors commitDraft's mapping but is allocation-only.
+func (p ProfilesPage) previewProfile() domain.Profile {
+	d := p.draft
+	args := map[string]any{
+		"flash-attn": d.FlashAttn,
+	}
+	if v, err := strconv.Atoi(d.NGL); err == nil {
+		args["ngl"] = float64(v)
+	}
+	if v, err := strconv.Atoi(d.CtxSize); err == nil {
+		args["ctx-size"] = float64(v)
+	}
+	if v, err := strconv.Atoi(d.BatchSize); err == nil {
+		args["batch-size"] = float64(v)
+	}
+	if v, err := strconv.Atoi(d.UBatchSize); err == nil {
+		args["ubatch-size"] = float64(v)
+	}
+	if v, err := strconv.Atoi(d.Port); err == nil {
+		args["port"] = float64(v)
+	}
+	if d.CacheTypeK != "" {
+		args["cache-type-k"] = d.CacheTypeK
+	}
+	if d.CacheTypeV != "" {
+		args["cache-type-v"] = d.CacheTypeV
+	}
+	return domain.Profile{
+		ID:    p.draft.ID,
+		Model: d.Model,
+		Args:  args,
+	}
 }
 
 func (p ProfilesPage) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
