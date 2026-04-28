@@ -45,3 +45,73 @@ func TestReadGGUFHeader_Truncated(t *testing.T) {
 		t.Fatal("expected error on truncated header, got nil")
 	}
 }
+
+func TestReadGGUFParams_ParameterCount(t *testing.T) {
+	var buf bytes.Buffer
+	buf.Write(buildGGUFHeader(3, 0, 1))
+	writeGGUFString(&buf, "general.parameter_count")
+	binary.Write(&buf, binary.LittleEndian, uint32(10)) // type uint64
+	binary.Write(&buf, binary.LittleEndian, uint64(32_000_000_000))
+
+	got, err := readGGUFParams(bytes.NewReader(buf.Bytes()))
+	if err != nil {
+		t.Fatalf("readGGUFParams: %v", err)
+	}
+	if got != "32B" {
+		t.Fatalf("params = %q, want %q", got, "32B")
+	}
+}
+
+func TestReadGGUFParams_SizeLabelString(t *testing.T) {
+	var buf bytes.Buffer
+	buf.Write(buildGGUFHeader(3, 0, 1))
+	writeGGUFString(&buf, "general.size_label")
+	binary.Write(&buf, binary.LittleEndian, uint32(8)) // type string
+	writeGGUFString(&buf, "7B")
+
+	got, err := readGGUFParams(bytes.NewReader(buf.Bytes()))
+	if err != nil {
+		t.Fatalf("readGGUFParams: %v", err)
+	}
+	if got != "7B" {
+		t.Fatalf("params = %q, want %q", got, "7B")
+	}
+}
+
+func TestReadGGUFParams_NoMatchReturnsEmpty(t *testing.T) {
+	var buf bytes.Buffer
+	buf.Write(buildGGUFHeader(3, 0, 1))
+	writeGGUFString(&buf, "general.architecture")
+	binary.Write(&buf, binary.LittleEndian, uint32(8)) // type string
+	writeGGUFString(&buf, "qwen")
+
+	got, err := readGGUFParams(bytes.NewReader(buf.Bytes()))
+	if err != nil {
+		t.Fatalf("readGGUFParams: %v", err)
+	}
+	if got != "" {
+		t.Fatalf("params = %q, want empty", got)
+	}
+}
+
+func TestReadGGUFParams_UnsupportedTypeAborts(t *testing.T) {
+	var buf bytes.Buffer
+	buf.Write(buildGGUFHeader(3, 0, 2))
+	writeGGUFString(&buf, "tokenizer.ggml.tokens")
+	binary.Write(&buf, binary.LittleEndian, uint32(9)) // type array — unsupported, abort scan
+	// Don't bother appending payload; reader should bail out at type check.
+
+	got, err := readGGUFParams(bytes.NewReader(buf.Bytes()))
+	if err != nil {
+		t.Fatalf("readGGUFParams: %v", err)
+	}
+	if got != "" {
+		t.Fatalf("params = %q, want empty (unsupported type aborts)", got)
+	}
+}
+
+// writeGGUFString writes the GGUF string format: u64 length + utf8 bytes.
+func writeGGUFString(buf *bytes.Buffer, s string) {
+	binary.Write(buf, binary.LittleEndian, uint64(len(s)))
+	buf.WriteString(s)
+}
