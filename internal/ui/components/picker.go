@@ -209,6 +209,12 @@ func (m *ModelPicker) applyFilter() {
 	}
 }
 
+// Cancel returns the cancel func for the in-flight scan (or nil).
+// Callers may invoke it to abort the scan when closing the picker.
+func (m ModelPicker) Cancel() context.CancelFunc {
+	return m.cancel
+}
+
 // View renders the picker as a centered overlay box.
 func (m ModelPicker) View() string {
 	title := theme.Title.Render("Pick a model")

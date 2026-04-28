@@ -16,6 +16,7 @@ import (
 	"github.com/quantmind-br/llama-cpp-loader/internal/domain"
 	"github.com/quantmind-br/llama-cpp-loader/internal/service/profilestore"
 	"github.com/quantmind-br/llama-cpp-loader/internal/service/validator"
+	"github.com/quantmind-br/llama-cpp-loader/internal/ui/components"
 	"github.com/quantmind-br/llama-cpp-loader/internal/ui/theme"
 )
 
@@ -47,6 +48,12 @@ type ProfilesPage struct {
 
 	// Status feedback.
 	flash string
+
+	// Picker overlay (slice 3).
+	pickerActive bool
+	picker       components.ModelPicker
+	scanner      components.ModelScanner
+	scanPaths    []string
 }
 
 type profilesKeyMap struct {
@@ -94,6 +101,13 @@ func NewProfilesPage(store profilestore.Store, schema domain.FlagSchema) Profile
 	}
 }
 
+// WithModelScanner enables the ctrl+p model picker overlay in the editor.
+func (p ProfilesPage) WithModelScanner(scanner components.ModelScanner, paths []string) ProfilesPage {
+	p.scanner = scanner
+	p.scanPaths = paths
+	return p
+}
+
 // loadedMsg is emitted by the load command.
 type loadedMsg struct {
 	profiles []domain.Profile
@@ -130,6 +144,27 @@ func (p ProfilesPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		p.list.SetItems(items)
 		return p, nil
 
+	case components.PickerScanStartedMsg, components.PickerScanEventMsg, components.PickerScanClosedMsg:
+		if p.pickerActive {
+			return p.updatePicker(msg)
+		}
+		return p, nil
+
+	case components.ModelPickedMsg:
+		p.draft.Model = msg.Path
+		p.pickerActive = false
+		if c := p.picker.Cancel(); c != nil {
+			c()
+		}
+		// Rebuild form so the new Model value is shown if user is on
+		// essentials sub-tab.
+		p.form = buildEditorForm(&p.draft, p.schema)
+		return p, p.form.Init()
+
+	case components.ModelPickerCancelledMsg:
+		p.pickerActive = false
+		return p, nil
+
 	case tea.KeyMsg:
 		if p.editing {
 			return p.updateForm(msg)
@@ -144,8 +179,11 @@ func (p ProfilesPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (p ProfilesPage) View() string {
+	if p.pickerActive {
+		return p.picker.View()
+	}
 	if p.editing && p.form != nil {
-		header := theme.Title.Render(fmt.Sprintf("Editor — [%s]   ctrl+t to switch", p.subTab))
+		header := theme.Title.Render(fmt.Sprintf("Editor — [%s]   ctrl+t to switch  ctrl+p to pick model", p.subTab))
 		var body string
 		if p.subTab == subTabEssentials {
 			body = p.form.View()
@@ -218,7 +256,21 @@ func (p ProfilesPage) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return p, cmd
 }
 
+func (p ProfilesPage) updatePicker(msg tea.Msg) (tea.Model, tea.Cmd) {
+	picker, cmd := p.picker.Update(msg)
+	p.picker = picker
+	return p, cmd
+}
+
 func (p ProfilesPage) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if p.pickerActive {
+		return p.updatePicker(msg)
+	}
+	if msg.String() == "ctrl+p" && p.scanner != nil {
+		p.picker = components.NewModelPicker(p.scanner, p.scanPaths)
+		p.pickerActive = true
+		return p, p.picker.Init()
+	}
 	if msg.String() == "esc" {
 		p.editing = false
 		p.form = nil
