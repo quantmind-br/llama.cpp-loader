@@ -1,6 +1,7 @@
 package llamahelp
 
 import (
+	"os"
 	"reflect"
 	"testing"
 
@@ -252,5 +253,31 @@ func TestParseFlagLine_MultiAlias(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %+v, want %+v", got, want)
+	}
+}
+
+func TestParseHelp_SmokeOnFixture(t *testing.T) {
+	data, err := os.ReadFile("../../../testdata/help-v7376.txt")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	schema, err := ParseHelp(data)
+	if err != nil {
+		t.Fatalf("ParseHelp: %v", err)
+	}
+	// Sanity: well-known flags must be present.
+	want := []string{"ctx-size", "batch-size", "ubatch-size", "flash-attn", "port", "mlock"}
+	for _, name := range want {
+		if _, ok := schema.Flags[name]; !ok {
+			t.Errorf("missing flag %q in parsed schema", name)
+		}
+	}
+	// At least 50 flags expected from a real help dump.
+	if len(schema.Flags) < 50 {
+		t.Errorf("expected ≥50 flags parsed, got %d", len(schema.Flags))
+	}
+	// Group should be set for at least one common-section flag.
+	if spec, ok := schema.Flags["ctx-size"]; ok && spec.Group != "common" {
+		t.Errorf("ctx-size group=%q, want %q", spec.Group, "common")
 	}
 }

@@ -1,6 +1,8 @@
 package llamahelp
 
 import (
+	"bufio"
+	"bytes"
 	"fmt"
 	"regexp"
 	"strings"
@@ -12,6 +14,36 @@ import (
 // The --help output renders these as TYPE; we hardcode the well-known set so
 // the editor can offer a select.
 var cacheTypeEnum = []string{"f32", "f16", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1"}
+
+// ParseHelp scans the full --help output and returns a FlagSchema.
+// Lines before the first section header are skipped (CUDA banner etc).
+// Continuation lines are ignored; only the first line of each flag is parsed.
+func ParseHelp(data []byte) (domain.FlagSchema, error) {
+	schema := domain.FlagSchema{Flags: make(map[string]domain.FlagSpec)}
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+	currentGroup := ""
+	for scanner.Scan() {
+		line := scanner.Text()
+		if header := parseSectionHeader(line); header != "" {
+			currentGroup = header
+			continue
+		}
+		if currentGroup == "" {
+			continue
+		}
+		spec, ok := parseFlagLine(line)
+		if !ok {
+			continue
+		}
+		spec.Group = currentGroup
+		schema.Flags[spec.Long] = spec
+	}
+	if err := scanner.Err(); err != nil {
+		return domain.FlagSchema{}, err
+	}
+	return schema, nil
+}
 
 var sectionHeaderRe = regexp.MustCompile(`^-{5}\s+(.+?)\s+params\s+-{5}$`)
 
