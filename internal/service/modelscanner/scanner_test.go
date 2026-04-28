@@ -156,3 +156,23 @@ func TestScanner_ErrorOnMissingRoot(t *testing.T) {
 		t.Fatalf("error events = %d, want 1; got events: %#v", errEvents, events)
 	}
 }
+
+func TestScanner_RespectsContextCancel(t *testing.T) {
+	dir := t.TempDir()
+	for i := 0; i < 50; i++ {
+		writeGGUFFile(t, filepath.Join(dir, "m"+string(rune('a'+i%26))+".gguf"), 1_000_000_000)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	s := New()
+	ch, err := s.Scan(ctx, []string{dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Cancel almost immediately.
+	cancel()
+
+	// Drain the channel; we just need it to close without hanging.
+	for range ch {
+	}
+}
