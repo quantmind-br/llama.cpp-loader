@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/quantmind-br/llama-cpp-loader/internal/domain"
@@ -39,6 +40,10 @@ type ModelsPage struct {
 	filter     string
 	filterMode bool
 	flash      string
+
+	actionForm   *huh.Form
+	actionAnswer *string
+	actionPath   string // path of the file the action submenu targets
 
 	keys modelsKeyMap
 }
@@ -179,9 +184,7 @@ func (p ModelsPage) handleScanEvent(evt domain.ScanEvent) (tea.Model, tea.Cmd) {
 	return p, nil
 }
 
-// refreshRows rebuilds table rows from p.files honoring the current
-// filter. Sorted by name for stable display.
-func (p *ModelsPage) refreshRows() {
+func (p ModelsPage) visibleFiles() []domain.ModelFile {
 	files := p.files
 	if p.filter != "" {
 		q := strings.ToLower(p.filter)
@@ -194,6 +197,13 @@ func (p *ModelsPage) refreshRows() {
 		files = filtered
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].Name < files[j].Name })
+	return files
+}
+
+// refreshRows rebuilds table rows from p.files honoring the current
+// filter. Sorted by name for stable display.
+func (p *ModelsPage) refreshRows() {
+	files := p.visibleFiles()
 	rows := make([]table.Row, 0, len(files))
 	for _, f := range files {
 		rows = append(rows, table.Row{
@@ -245,6 +255,34 @@ func (p ModelsPage) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		p.refreshRows()
 		return p, startScanCmd(p.scanner, p.paths)
+	case key.Matches(msg, p.keys.Enter):
+		if len(p.table.Rows()) == 0 {
+			return p, nil
+		}
+		idx := p.table.Cursor()
+		if idx < 0 {
+			return p, nil
+		}
+		// Map row idx to file via filtered ordering. Recompute filtered
+		// list to match what's displayed.
+		visible := p.visibleFiles()
+		if idx >= len(visible) {
+			return p, nil
+		}
+		selected := visible[idx]
+		answer := ""
+		p.actionAnswer = &answer
+		p.actionPath = selected.Path
+		p.actionForm = huh.NewForm(huh.NewGroup(
+			huh.NewSelect[string]().
+				Title("Action for "+selected.Name).
+				Options(
+					huh.NewOption("Use in new profile", "new"),
+					huh.NewOption("Reveal path", "reveal"),
+				).
+				Value(p.actionAnswer),
+		)).WithShowHelp(false).WithShowErrors(false)
+		return p, p.actionForm.Init()
 	}
 
 	if p.filterMode {
