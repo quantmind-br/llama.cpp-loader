@@ -22,3 +22,7 @@ go.work.sum
 # OS
 .DS_Store
 Thumbs.db
+
+# Go test/coverage artifacts
+coverage.out
+coverage.html
