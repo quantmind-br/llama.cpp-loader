@@ -92,3 +92,29 @@ func TestModelsPage_FilterModeReducesRows(t *testing.T) {
 		t.Fatalf("rows post-filter = %d, want 1", got)
 	}
 }
+
+func TestModelsPage_ActionUseInNewProfileEmitsMsg(t *testing.T) {
+	mf := domain.ModelFile{Path: "/m/q.gguf", Name: "q.gguf"}
+	page := NewModelsPage(&fakeScanner{}, []string{"/m"})
+	page.files = []domain.ModelFile{mf}
+	page.refreshRows()
+
+	// Inject "new" answer and call the form-done handler directly.
+	answer := "new"
+	page.actionAnswer = &answer
+	page.actionPath = mf.Path
+
+	updated, cmd := page.Update(actionFormDoneMsg{})
+	_ = updated
+	if cmd == nil {
+		t.Fatal("expected UseInNewProfileMsg cmd, got nil")
+	}
+	got := cmd()
+	useMsg, ok := got.(UseInNewProfileMsg)
+	if !ok {
+		t.Fatalf("msg type = %T, want UseInNewProfileMsg", got)
+	}
+	if useMsg.Path != "/m/q.gguf" {
+		t.Fatalf("Path = %q", useMsg.Path)
+	}
+}

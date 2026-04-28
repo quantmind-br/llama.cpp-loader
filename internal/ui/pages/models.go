@@ -153,7 +153,41 @@ func (p ModelsPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return next, waitForScanEvent(msg.ch)
 	case scanChannelClosedMsg:
 		return p, nil
+	case actionFormDoneMsg:
+		// Action form completed; consume answer.
+		path := p.actionPath
+		ans := ""
+		if p.actionAnswer != nil {
+			ans = *p.actionAnswer
+		}
+		p.actionForm = nil
+		p.actionAnswer = nil
+		p.actionPath = ""
+		switch ans {
+		case "new":
+			return p, func() tea.Msg { return UseInNewProfileMsg{Path: path} }
+		case "reveal":
+			p.flash = path
+			return p, nil
+		}
+		return p, nil
 	case tea.KeyMsg:
+		if p.actionForm != nil {
+			if msg.String() == "esc" {
+				p.actionForm = nil
+				p.actionAnswer = nil
+				p.actionPath = ""
+				return p, nil
+			}
+			updated, cmd := p.actionForm.Update(msg)
+			if f, ok := updated.(*huh.Form); ok {
+				p.actionForm = f
+			}
+			if p.actionForm != nil && p.actionForm.State == huh.StateCompleted {
+				return p.Update(actionFormDoneMsg{})
+			}
+			return p, cmd
+		}
 		return p.handleKey(msg)
 	}
 	return p, nil
@@ -307,6 +341,9 @@ func (p ModelsPage) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (p ModelsPage) View() string {
+	if p.actionForm != nil {
+		return p.actionForm.View()
+	}
 	header := theme.Title.Render("Models")
 	statusLine := p.renderStatus()
 	filterLine := ""
@@ -343,3 +380,12 @@ func (p ModelsPage) renderStatus() string {
 	}
 	return strings.Join(parts, "  ")
 }
+
+// UseInNewProfileMsg requests creating a new profile pre-filled with Path.
+// Root catches this message, switches to the Profiles tab, and forwards
+// it so ProfilesPage starts a new draft.
+type UseInNewProfileMsg struct {
+	Path string
+}
+
+type actionFormDoneMsg struct{}
