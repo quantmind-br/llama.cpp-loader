@@ -2,9 +2,15 @@ package llamahelp
 
 import "github.com/quantmind-br/llama-cpp-loader/internal/domain"
 
-// EmbeddedSchema returns the compile-time fallback schema covering the curated
-// essentials. Used when llama-server --help cannot be invoked. Version label
-// reflects the upstream build the embedded data was pinned against.
+// EmbeddedSchema returns the compile-time fallback FlagSchema covering the
+// curated essential flags listed in the design spec. The schema is pinned to
+// llama.cpp build "v7376 (380b4c9)" — last validated on 2026-04-28.
+//
+// To refresh against a newer llama.cpp build:
+//   1. capture the help into testdata: llama-server --help > testdata/help-vXXXX.txt
+//   2. re-run the golden: go test ./internal/service/llamahelp -update
+//   3. eyeball flag types/defaults; only update embedded.go if essentials drift
+//   4. bump the Version field below to "embedded-vXXXX"
 func EmbeddedSchema() domain.FlagSchema {
 	flags := map[string]domain.FlagSpec{
 		"model": {
