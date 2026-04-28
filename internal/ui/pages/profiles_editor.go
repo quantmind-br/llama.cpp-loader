@@ -38,7 +38,7 @@ type profileDraft struct {
 	BatchSize   string
 	UBatchSize  string
 	Port        string
-	FlashAttn   bool
+	FlashAttn   string
 	CacheTypeK  string
 	CacheTypeV  string
 	isNew       bool
@@ -59,9 +59,22 @@ func argString(v any) string {
 	}
 }
 
-func argBool(v any) bool {
-	b, _ := v.(bool)
-	return b
+// flashAttnToString converts a stored flash-attn value to the editor's
+// string form. Existing profiles may have boolean values from earlier
+// versions of the editor; map true → "on", false → "off". Strings pass
+// through; anything else falls back to "auto".
+func flashAttnToString(v any) string {
+	switch t := v.(type) {
+	case string:
+		return t
+	case bool:
+		if t {
+			return "on"
+		}
+		return "off"
+	default:
+		return "auto"
+	}
 }
 
 func buildEditorForm(d *profileDraft, schema domain.FlagSchema) *huh.Form {
@@ -78,7 +91,7 @@ func buildEditorForm(d *profileDraft, schema domain.FlagSchema) *huh.Form {
 			huh.NewInput().Title(labelWithHelp(schema, "batch-size", "batch-size")).Value(&d.BatchSize),
 			huh.NewInput().Title(labelWithHelp(schema, "ubatch-size", "ubatch-size")).Value(&d.UBatchSize),
 			huh.NewInput().Title(labelWithHelp(schema, "port", "port")).Value(&d.Port),
-			huh.NewConfirm().Title(labelWithHelp(schema, "flash-attn", "flash-attn?")).Value(&d.FlashAttn).Affirmative("Yes").Negative("No"),
+			huh.NewSelect[string]().Title(labelWithHelp(schema, "flash-attn", "flash-attn")).Options(toOptions(selectOptions(schema, "flash-attn", []string{"on", "off", "auto"}))...).Value(&d.FlashAttn),
 			huh.NewSelect[string]().Title("cache-type-k").Options(toOptions(cacheOpts)...).Value(&d.CacheTypeK),
 			huh.NewSelect[string]().Title("cache-type-v").Options(toOptions(cacheOpts)...).Value(&d.CacheTypeV),
 		),

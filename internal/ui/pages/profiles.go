@@ -276,10 +276,12 @@ func (p ProfilesPage) commitDraft() (tea.Model, tea.Cmd) {
 	port, _ := strconv.Atoi(d.Port)
 
 	args := map[string]any{
-		"ngl":        float64(ngl),
-		"ctx-size":   float64(ctx),
-		"port":       float64(port),
-		"flash-attn": d.FlashAttn,
+		"ngl":      float64(ngl),
+		"ctx-size": float64(ctx),
+		"port":     float64(port),
+	}
+	if d.FlashAttn != "" {
+		args["flash-attn"] = d.FlashAttn
 	}
 	if v, err := strconv.Atoi(d.BatchSize); err == nil {
 		args["batch-size"] = float64(v)
@@ -323,8 +325,9 @@ func (p ProfilesPage) commitDraft() (tea.Model, tea.Cmd) {
 // the validator. Mirrors commitDraft's mapping but is allocation-only.
 func (p ProfilesPage) previewProfile() domain.Profile {
 	d := p.draft
-	args := map[string]any{
-		"flash-attn": d.FlashAttn,
+	args := map[string]any{}
+	if d.FlashAttn != "" {
+		args["flash-attn"] = d.FlashAttn
 	}
 	if v, err := strconv.Atoi(d.NGL); err == nil {
 		args["ngl"] = float64(v)
@@ -396,7 +399,7 @@ func (p ProfilesPage) startNew() (tea.Model, tea.Cmd) {
 		BatchSize:  "2048",
 		UBatchSize: "512",
 		Port:       "8080",
-		FlashAttn:  true,
+		FlashAttn:  "auto",
 		CacheTypeK: "q8_0",
 		CacheTypeV: "q8_0",
 		isNew:      true,
@@ -422,7 +425,7 @@ func (p ProfilesPage) startEditSelected() (tea.Model, tea.Cmd) {
 		BatchSize:   argString(pr.Args["batch-size"]),
 		UBatchSize:  argString(pr.Args["ubatch-size"]),
 		Port:        argString(pr.Args["port"]),
-		FlashAttn:   argBool(pr.Args["flash-attn"]),
+		FlashAttn:   flashAttnToString(pr.Args["flash-attn"]),
 		CacheTypeK:  argString(pr.Args["cache-type-k"]),
 		CacheTypeV:  argString(pr.Args["cache-type-v"]),
 	}
