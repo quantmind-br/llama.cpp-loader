@@ -19,3 +19,20 @@ func parseQuant(name string) string {
 	}
 	return strings.ToUpper(m)
 }
+
+// paramsRe matches parameter-count labels in filenames:
+// "32B", "7B", "6.7B", "3.8B", "8x7B" (mixture-of-experts).
+// Captures the number+B with optional decimal and optional NxM prefix.
+var paramsRe = regexp.MustCompile(`(?i)(?:^|[-_])(\d+(?:x\d+)?(?:\.\d+)?B)(?:[-_.]|$)`)
+
+// parseParams extracts the parameter-count tag from a GGUF filename.
+// Returns "" if no recognizable size label is present.
+func parseParams(name string) string {
+	m := paramsRe.FindStringSubmatch(name)
+	if len(m) < 2 {
+		return ""
+	}
+	// Preserve mixed-case labels like "8x7B"; only normalise the trailing B.
+	s := m[1]
+	return s[:len(s)-1] + strings.ToUpper(string(s[len(s)-1]))
+}

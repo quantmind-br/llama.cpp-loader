@@ -25,3 +25,25 @@ func TestParseQuant(t *testing.T) {
 		})
 	}
 }
+
+func TestParseParams(t *testing.T) {
+	cases := []struct {
+		name string
+		want string
+	}{
+		{"Qwen2.5-Coder-32B-Instruct-Q5_K_M.gguf", "32B"},
+		{"llama-3.1-8b-instruct-q4_k_m.gguf", "8B"},
+		{"deepseek-coder-6.7B-instruct-Q4_0.gguf", "6.7B"},
+		{"Mixtral-8x7B-Instruct-v0.1-Q4_K_M.gguf", "8x7B"},
+		{"phi-3.5-mini-3.8B-instruct-Q4_K_M.gguf", "3.8B"},
+		{"plain-name.gguf", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseParams(tc.name)
+			if got != tc.want {
+				t.Fatalf("parseParams(%q) = %q, want %q", tc.name, got, tc.want)
+			}
+		})
+	}
+}
