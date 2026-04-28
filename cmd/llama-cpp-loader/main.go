@@ -12,6 +12,7 @@ import (
 	"github.com/quantmind-br/llama-cpp-loader/internal/config"
 	"github.com/quantmind-br/llama-cpp-loader/internal/domain"
 	"github.com/quantmind-br/llama-cpp-loader/internal/service/llamahelp"
+	"github.com/quantmind-br/llama-cpp-loader/internal/service/modelscanner"
 	"github.com/quantmind-br/llama-cpp-loader/internal/service/profilestore"
 	"github.com/quantmind-br/llama-cpp-loader/internal/ui"
 	"github.com/quantmind-br/llama-cpp-loader/internal/ui/pages"
@@ -31,9 +32,15 @@ func main() {
 	}
 
 	schema, schemaWarn := loadSchema()
+	scanner := modelscanner.New()
+
+	profilesPage := pages.NewProfilesPage(store, schema).
+		WithModelScanner(scanner, cfg.Models.SearchPaths)
+	modelsPage := pages.NewModelsPage(scanner, cfg.Models.SearchPaths)
 
 	root := ui.NewRoot(parseTab(cfg.UI.DefaultTab)).
-		WithProfilesPage(pages.NewProfilesPage(store, schema))
+		WithProfilesPage(profilesPage).
+		WithModelsPage(modelsPage)
 	if schemaWarn != "" {
 		root = root.WithStatusWarn(schemaWarn)
 	}
