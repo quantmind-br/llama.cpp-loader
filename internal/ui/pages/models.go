@@ -3,6 +3,9 @@ package pages
 
 import (
 	"context"
+	"fmt"
+	"sort"
+	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/table"
@@ -152,8 +155,70 @@ func (p ModelsPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (p ModelsPage) handleScanEvent(evt domain.ScanEvent) (tea.Model, tea.Cmd) {
-	// Filled in Task 14.
+	switch evt.Type {
+	case domain.ScanEventFile:
+		if evt.File != nil {
+			p.files = append(p.files, *evt.File)
+			p.refreshRows()
+		}
+	case domain.ScanEventProgress:
+		st := p.statusMap[evt.Root]
+		st.count = evt.Count
+		st.state = "scanned"
+		p.statusMap[evt.Root] = st
+	case domain.ScanEventError:
+		st := p.statusMap[evt.Root]
+		st.state = "error"
+		if evt.Error != nil {
+			st.err = evt.Error.Error()
+		}
+		p.statusMap[evt.Root] = st
+	case domain.ScanEventDone:
+		// Channel will close right after; nothing to do.
+	}
 	return p, nil
+}
+
+// refreshRows rebuilds table rows from p.files honoring the current
+// filter. Sorted by name for stable display.
+func (p *ModelsPage) refreshRows() {
+	files := p.files
+	if p.filter != "" {
+		q := strings.ToLower(p.filter)
+		filtered := make([]domain.ModelFile, 0, len(files))
+		for _, f := range files {
+			if strings.Contains(strings.ToLower(f.Name), q) {
+				filtered = append(filtered, f)
+			}
+		}
+		files = filtered
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].Name < files[j].Name })
+	rows := make([]table.Row, 0, len(files))
+	for _, f := range files {
+		rows = append(rows, table.Row{
+			truncate(f.Name, 36),
+			humanSize(f.SizeBytes),
+			f.Quant,
+			f.Params,
+			truncate(f.Path, 40),
+		})
+	}
+	p.table.SetRows(rows)
+}
+
+// humanSize formats bytes as "X.YG" / "X.YM".
+func humanSize(n int64) string {
+	switch {
+	case n >= 1<<30:
+		return fmt.Sprintf("%.1fG", float64(n)/float64(1<<30))
+	case n >= 1<<20:
+		return fmt.Sprintf("%.1fM", float64(n)/float64(1<<20))
+	case n >= 1<<10:
+		return fmt.Sprintf("%.1fK", float64(n)/float64(1<<10))
+	default:
+		return fmt.Sprintf("%dB", n)
+	}
 }
 
 func (p ModelsPage) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
