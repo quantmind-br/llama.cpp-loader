@@ -8,6 +8,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/quantmind-br/llama-cpp-loader/internal/config"
+	"github.com/quantmind-br/llama-cpp-loader/internal/service/llamahelp"
 	"github.com/quantmind-br/llama-cpp-loader/internal/service/profilestore"
 	"github.com/quantmind-br/llama-cpp-loader/internal/ui"
 	"github.com/quantmind-br/llama-cpp-loader/internal/ui/pages"
@@ -27,7 +28,7 @@ func main() {
 	}
 
 	root := ui.NewRoot(parseTab(cfg.UI.DefaultTab)).
-		WithProfilesPage(pages.NewProfilesPage(store))
+		WithProfilesPage(pages.NewProfilesPage(store, llamahelp.EmbeddedSchema()))
 
 	prog := tea.NewProgram(root, tea.WithAltScreen())
 	if _, err := prog.Run(); err != nil {

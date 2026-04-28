@@ -27,7 +27,7 @@ func TestProfilesPage_LoadsExistingProfile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	page := NewProfilesPage(store)
+	page := NewProfilesPage(store, domain.FlagSchema{})
 	tm := teatest.NewTestModel(t, page, teatest.WithInitialTermSize(120, 30))
 	tm.Send(tea.WindowSizeMsg{Width: 120, Height: 30})
 
@@ -46,7 +46,7 @@ func TestProfilesPage_NewProfileSavesViaStore(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	page := NewProfilesPage(store)
+	page := NewProfilesPage(store, domain.FlagSchema{})
 	tm := teatest.NewTestModel(t, page, teatest.WithInitialTermSize(120, 30))
 	tm.Send(tea.WindowSizeMsg{Width: 120, Height: 30})
 

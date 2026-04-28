@@ -18,7 +18,8 @@ import (
 
 // ProfilesPage is the master-detail page for managing profiles.
 type ProfilesPage struct {
-	store profilestore.Store
+	store  profilestore.Store
+	schema domain.FlagSchema
 
 	list      list.Model
 	listKeys  profilesKeyMap
@@ -63,8 +64,8 @@ func (i item) Title() string       { return i.p.Name }
 func (i item) Description() string { return i.p.ID }
 func (i item) FilterValue() string { return i.p.Name + " " + i.p.ID }
 
-// NewProfilesPage constructs the page wired to a Store.
-func NewProfilesPage(store profilestore.Store) ProfilesPage {
+// NewProfilesPage constructs the page wired to a Store and FlagSchema.
+func NewProfilesPage(store profilestore.Store, schema domain.FlagSchema) ProfilesPage {
 	delegate := list.NewDefaultDelegate()
 	l := list.New(nil, delegate, 0, 0)
 	l.Title = "Profiles"
@@ -73,6 +74,7 @@ func NewProfilesPage(store profilestore.Store) ProfilesPage {
 
 	return ProfilesPage{
 		store:    store,
+		schema:   schema,
 		list:     l,
 		listKeys: defaultProfilesKeys(),
 	}
@@ -218,18 +220,31 @@ func (p ProfilesPage) commitDraft() (tea.Model, tea.Cmd) {
 	ctx, _ := strconv.Atoi(d.CtxSize)
 	port, _ := strconv.Atoi(d.Port)
 
+	args := map[string]any{
+		"ngl":        float64(ngl),
+		"ctx-size":   float64(ctx),
+		"port":       float64(port),
+		"flash-attn": d.FlashAttn,
+	}
+	if v, err := strconv.Atoi(d.BatchSize); err == nil {
+		args["batch-size"] = float64(v)
+	}
+	if v, err := strconv.Atoi(d.UBatchSize); err == nil {
+		args["ubatch-size"] = float64(v)
+	}
+	if d.CacheTypeK != "" {
+		args["cache-type-k"] = d.CacheTypeK
+	}
+	if d.CacheTypeV != "" {
+		args["cache-type-v"] = d.CacheTypeV
+	}
 	pr := domain.Profile{
 		ID:          d.ID,
 		Name:        d.Name,
 		Description: d.Description,
 		Model:       d.Model,
-		Args: map[string]any{
-			"ngl":         float64(ngl),
-			"ctx-size":    float64(ctx),
-			"port":        float64(port),
-			"flash-attn":  d.FlashAttn,
-		},
-		Launch: domain.LaunchConfig{DefaultBackground: true},
+		Args:        args,
+		Launch:      domain.LaunchConfig{DefaultBackground: true},
 	}
 
 	// Preserve existing meta when editing.
@@ -284,15 +299,19 @@ func (p ProfilesPage) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (p ProfilesPage) startNew() (tea.Model, tea.Cmd) {
 	p.draft = profileDraft{
-		ID:        "",
-		Name:      "New Profile",
-		NGL:       "99",
-		CtxSize:   "8192",
-		Port:      "8080",
-		FlashAttn: true,
-		isNew:     true,
+		ID:         "",
+		Name:       "New Profile",
+		NGL:        "99",
+		CtxSize:    "8192",
+		BatchSize:  "2048",
+		UBatchSize: "512",
+		Port:       "8080",
+		FlashAttn:  true,
+		CacheTypeK: "q8_0",
+		CacheTypeV: "q8_0",
+		isNew:      true,
 	}
-	p.form = buildEditorForm(&p.draft)
+	p.form = buildEditorForm(&p.draft, p.schema)
 	p.editing = true
 	return p, p.form.Init()
 }
@@ -310,10 +329,14 @@ func (p ProfilesPage) startEditSelected() (tea.Model, tea.Cmd) {
 		Model:       pr.Model,
 		NGL:         argString(pr.Args["ngl"]),
 		CtxSize:     argString(pr.Args["ctx-size"]),
+		BatchSize:   argString(pr.Args["batch-size"]),
+		UBatchSize:  argString(pr.Args["ubatch-size"]),
 		Port:        argString(pr.Args["port"]),
 		FlashAttn:   argBool(pr.Args["flash-attn"]),
+		CacheTypeK:  argString(pr.Args["cache-type-k"]),
+		CacheTypeV:  argString(pr.Args["cache-type-v"]),
 	}
-	p.form = buildEditorForm(&p.draft)
+	p.form = buildEditorForm(&p.draft, p.schema)
 	p.editing = true
 	return p, p.form.Init()
 }
