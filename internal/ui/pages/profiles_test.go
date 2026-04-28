@@ -138,3 +138,25 @@ func TestProfilesPage_PickerWritesDraftModel(t *testing.T) {
 		t.Errorf("pickerActive = true, want false after pick")
 	}
 }
+
+func TestProfilesPage_UseInNewProfilePrefillsDraft(t *testing.T) {
+	dir := t.TempDir()
+	store, err := profilestore.NewFSStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page := NewProfilesPage(store, domain.FlagSchema{})
+
+	updated, _ := page.Update(UseInNewProfileMsg{Path: "/foo/bar.gguf"})
+	page = updated.(ProfilesPage)
+
+	if !page.editing {
+		t.Fatal("page.editing = false, want true")
+	}
+	if page.draft.Model != "/foo/bar.gguf" {
+		t.Fatalf("draft.Model = %q", page.draft.Model)
+	}
+	if !page.draft.isNew {
+		t.Errorf("isNew = false, want true")
+	}
+}

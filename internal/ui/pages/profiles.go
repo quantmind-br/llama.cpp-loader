@@ -150,6 +150,27 @@ func (p ProfilesPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return p, nil
 
+	case UseInNewProfileMsg:
+		// Open a new draft pre-filled with the selected model path.
+		p.draft = profileDraft{
+			ID:         "",
+			Name:       "New Profile",
+			Model:      msg.Path,
+			NGL:        "99",
+			CtxSize:    "8192",
+			BatchSize:  "2048",
+			UBatchSize: "512",
+			Port:       "8080",
+			FlashAttn:  "auto",
+			CacheTypeK: "q8_0",
+			CacheTypeV: "q8_0",
+			isNew:      true,
+		}
+		p.form = buildEditorForm(&p.draft, p.schema)
+		p.editing = true
+		p.flash = "new profile prefilled with picked model"
+		return p, p.form.Init()
+
 	case components.ModelPickedMsg:
 		p.draft.Model = msg.Path
 		p.pickerActive = false
