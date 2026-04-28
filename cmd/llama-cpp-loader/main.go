@@ -1,0 +1,46 @@
+// Command llama-cpp-loader launches the TUI for managing llama.cpp profiles.
+package main
+
+import (
+	"fmt"
+	"os"
+
+	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/quantmind-br/llama-cpp-loader/internal/config"
+	"github.com/quantmind-br/llama-cpp-loader/internal/ui"
+)
+
+func main() {
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "config error: %v\n", err)
+		os.Exit(1)
+	}
+
+	initial := ui.TabProfiles
+	if cfg.UI.DefaultTab != "" {
+		initial = parseTab(cfg.UI.DefaultTab)
+	}
+
+	root := ui.NewRoot(initial)
+
+	prog := tea.NewProgram(root, tea.WithAltScreen())
+	if _, err := prog.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "tui error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func parseTab(name string) ui.Tab {
+	switch name {
+	case "launcher":
+		return ui.TabLauncher
+	case "monitor":
+		return ui.TabMonitor
+	case "models":
+		return ui.TabModels
+	default:
+		return ui.TabProfiles
+	}
+}
