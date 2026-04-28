@@ -259,6 +259,44 @@ func TestParseFlagLine_MultiAlias(t *testing.T) {
 	}
 }
 
+func TestParseFlagLine_NegationPairCanonicalIsPositive(t *testing.T) {
+	cases := []struct {
+		line     string
+		wantLong string
+		wantAls  []string
+	}{
+		{
+			line:     "--perf, --no-perf                       whether to enable internal libllama performance timings",
+			wantLong: "perf",
+			wantAls:  []string{"no-perf"},
+		},
+		{
+			line:     "-e,    --escape, --no-escape            whether to process escapes sequences",
+			wantLong: "escape",
+			wantAls:  []string{"no-escape"},
+		},
+		{
+			line:     "-cb,   --cont-batching, -nocb, --no-cont-batching   batching mode",
+			wantLong: "cont-batching",
+			wantAls:  []string{"no-cont-batching"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.line, func(t *testing.T) {
+			got, ok := parseFlagLine(tc.line)
+			if !ok {
+				t.Fatalf("!ok for %q", tc.line)
+			}
+			if got.Long != tc.wantLong {
+				t.Errorf("Long=%q, want %q", got.Long, tc.wantLong)
+			}
+			if !reflect.DeepEqual(got.Aliases, tc.wantAls) {
+				t.Errorf("Aliases=%v, want %v", got.Aliases, tc.wantAls)
+			}
+		})
+	}
+}
+
 func TestParseHelp_SmokeOnFixture(t *testing.T) {
 	data, err := os.ReadFile("../../../testdata/help-v7376.txt")
 	if err != nil {

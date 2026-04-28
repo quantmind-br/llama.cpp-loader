@@ -100,13 +100,26 @@ func parseFlagLine(line string) (domain.FlagSpec, bool) {
 		return domain.FlagSpec{}, false
 	}
 
+	canonicalIdx := len(longs) - 1
+	// If the last alias is a negation, prefer the positive form earlier in the list.
+	if strings.HasPrefix(longs[canonicalIdx], "no-") {
+		for i, l := range longs {
+			if !strings.HasPrefix(l, "no-") {
+				canonicalIdx = i
+				break
+			}
+		}
+	}
 	spec := domain.FlagSpec{
-		Long:     longs[len(longs)-1],
+		Long:     longs[canonicalIdx],
 		Short:    short,
 		HelpText: descChunk,
 	}
 	if len(longs) > 1 {
-		spec.Aliases = longs[:len(longs)-1]
+		aliases := make([]string, 0, len(longs)-1)
+		aliases = append(aliases, longs[:canonicalIdx]...)
+		aliases = append(aliases, longs[canonicalIdx+1:]...)
+		spec.Aliases = aliases
 	}
 	spec.Type = inferType(placeholder)
 	if spec.Type == domain.FlagTypeEnum {

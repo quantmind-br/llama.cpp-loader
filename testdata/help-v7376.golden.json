@@ -201,6 +201,18 @@
       "HelpText": "print source-able bash completion script for llama.cpp",
       "Group": "common"
     },
+    "context-shift": {
+      "Long": "context-shift",
+      "Short": "",
+      "Aliases": [
+        "no-context-shift"
+      ],
+      "Type": 0,
+      "EnumValues": null,
+      "Default": null,
+      "HelpText": "whether to use context shift on infinite text generation (default:",
+      "Group": "example-specific"
+    },
     "control-vector": {
       "Long": "control-vector",
       "Short": "",
@@ -478,6 +490,18 @@
       "HelpText": "restrict to only support embedding use case; use only with dedicated",
       "Group": "example-specific"
     },
+    "escape": {
+      "Long": "escape",
+      "Short": "e",
+      "Aliases": [
+        "no-escape"
+      ],
+      "Type": 0,
+      "EnumValues": null,
+      "Default": null,
+      "HelpText": "whether to process escapes sequences (\\n, \\r, \\t, \\', \\\", \\\\)",
+      "Group": "common"
+    },
     "fim-qwen-1.5b-default": {
       "Long": "fim-qwen-1.5b-default",
       "Short": "",
@@ -670,6 +694,18 @@
       "EnumValues": null,
       "Default": null,
       "HelpText": "minimum number of tokens each image can take, only used by vision",
+      "Group": "example-specific"
+    },
+    "jinja": {
+      "Long": "jinja",
+      "Short": "",
+      "Aliases": [
+        "no-jinja"
+      ],
+      "Type": 0,
+      "EnumValues": null,
+      "Default": "enabled",
+      "HelpText": "whether to use jinja template engine for chat (default: enabled)",
       "Group": "example-specific"
     },
     "json-schema": {
@@ -920,6 +956,18 @@
       "HelpText": "force system to keep model in RAM rather than swapping or compressing",
       "Group": "common"
     },
+    "mmap": {
+      "Long": "mmap",
+      "Short": "",
+      "Aliases": [
+        "no-mmap"
+      ],
+      "Type": 0,
+      "EnumValues": null,
+      "Default": null,
+      "HelpText": "whether to memory-map model (if disabled, slower load but may reduce",
+      "Group": "common"
+    },
     "mmproj": {
       "Long": "mmproj",
       "Short": "mm",
@@ -928,6 +976,18 @@
       "EnumValues": null,
       "Default": null,
       "HelpText": "path to a multimodal projector file. see tools/mtmd/README.md",
+      "Group": "example-specific"
+    },
+    "mmproj-offload": {
+      "Long": "mmproj-offload",
+      "Short": "",
+      "Aliases": [
+        "no-mmproj-offload"
+      ],
+      "Type": 0,
+      "EnumValues": null,
+      "Default": null,
+      "HelpText": "whether to enable GPU offloading for multimodal projector (default:",
       "Group": "example-specific"
     },
     "mmproj-url": {
@@ -1054,30 +1114,6 @@
       "HelpText": "number of tokens to predict (default: -1, -1 = infinity)",
       "Group": "common"
     },
-    "no-context-shift": {
-      "Long": "no-context-shift",
-      "Short": "",
-      "Aliases": [
-        "context-shift"
-      ],
-      "Type": 0,
-      "EnumValues": null,
-      "Default": null,
-      "HelpText": "whether to use context shift on infinite text generation (default:",
-      "Group": "example-specific"
-    },
-    "no-escape": {
-      "Long": "no-escape",
-      "Short": "e",
-      "Aliases": [
-        "escape"
-      ],
-      "Type": 0,
-      "EnumValues": null,
-      "Default": null,
-      "HelpText": "whether to process escapes sequences (\\n, \\r, \\t, \\', \\\", \\\\)",
-      "Group": "common"
-    },
     "no-host": {
       "Long": "no-host",
       "Short": "",
@@ -1087,114 +1123,6 @@
       "Default": null,
       "HelpText": "bypass host buffer allowing extra buffers to be used",
       "Group": "common"
-    },
-    "no-jinja": {
-      "Long": "no-jinja",
-      "Short": "",
-      "Aliases": [
-        "jinja"
-      ],
-      "Type": 0,
-      "EnumValues": null,
-      "Default": "enabled",
-      "HelpText": "whether to use jinja template engine for chat (default: enabled)",
-      "Group": "example-specific"
-    },
-    "no-mmap": {
-      "Long": "no-mmap",
-      "Short": "",
-      "Aliases": [
-        "mmap"
-      ],
-      "Type": 0,
-      "EnumValues": null,
-      "Default": null,
-      "HelpText": "whether to memory-map model (if disabled, slower load but may reduce",
-      "Group": "common"
-    },
-    "no-mmproj-offload": {
-      "Long": "no-mmproj-offload",
-      "Short": "",
-      "Aliases": [
-        "mmproj-offload"
-      ],
-      "Type": 0,
-      "EnumValues": null,
-      "Default": null,
-      "HelpText": "whether to enable GPU offloading for multimodal projector (default:",
-      "Group": "example-specific"
-    },
-    "no-op-offload": {
-      "Long": "no-op-offload",
-      "Short": "",
-      "Aliases": [
-        "op-offload"
-      ],
-      "Type": 0,
-      "EnumValues": null,
-      "Default": true,
-      "HelpText": "whether to offload host tensor operations to device (default: true)",
-      "Group": "common"
-    },
-    "no-perf": {
-      "Long": "no-perf",
-      "Short": "",
-      "Aliases": [
-        "perf"
-      ],
-      "Type": 0,
-      "EnumValues": null,
-      "Default": null,
-      "HelpText": "whether to enable internal libllama performance timings (default:",
-      "Group": "common"
-    },
-    "no-repack": {
-      "Long": "no-repack",
-      "Short": "nr",
-      "Aliases": [
-        "repack"
-      ],
-      "Type": 0,
-      "EnumValues": null,
-      "Default": "enabled",
-      "HelpText": "whether to enable weight repacking (default: enabled)",
-      "Group": "common"
-    },
-    "no-slots": {
-      "Long": "no-slots",
-      "Short": "",
-      "Aliases": [
-        "slots"
-      ],
-      "Type": 0,
-      "EnumValues": null,
-      "Default": "enabled",
-      "HelpText": "expose slots monitoring endpoint (default: enabled)",
-      "Group": "example-specific"
-    },
-    "no-warmup": {
-      "Long": "no-warmup",
-      "Short": "",
-      "Aliases": [
-        "warmup"
-      ],
-      "Type": 0,
-      "EnumValues": null,
-      "Default": "enabled",
-      "HelpText": "whether to perform warmup with an empty run (default: enabled)",
-      "Group": "example-specific"
-    },
-    "no-webui": {
-      "Long": "no-webui",
-      "Short": "",
-      "Aliases": [
-        "webui"
-      ],
-      "Type": 0,
-      "EnumValues": null,
-      "Default": "enabled",
-      "HelpText": "whether to enable the Web UI (default: enabled)",
-      "Group": "example-specific"
     },
     "numa": {
       "Long": "numa",
@@ -1214,6 +1142,18 @@
       "EnumValues": null,
       "Default": null,
       "HelpText": "Offline mode: forces use of cache, prevents network access",
+      "Group": "common"
+    },
+    "op-offload": {
+      "Long": "op-offload",
+      "Short": "",
+      "Aliases": [
+        "no-op-offload"
+      ],
+      "Type": 0,
+      "EnumValues": null,
+      "Default": true,
+      "HelpText": "whether to offload host tensor operations to device (default: true)",
       "Group": "common"
     },
     "override-kv": {
@@ -1245,6 +1185,18 @@
       "Default": "",
       "HelpText": "path to serve static files from (default: )",
       "Group": "example-specific"
+    },
+    "perf": {
+      "Long": "perf",
+      "Short": "",
+      "Aliases": [
+        "no-perf"
+      ],
+      "Type": 0,
+      "EnumValues": null,
+      "Default": null,
+      "HelpText": "whether to enable internal libllama performance timings (default:",
+      "Group": "common"
     },
     "poll": {
       "Long": "poll",
@@ -1351,6 +1303,18 @@
       "Default": null,
       "HelpText": "controls whether thought tags are allowed and/or extracted from the",
       "Group": "example-specific"
+    },
+    "repack": {
+      "Long": "repack",
+      "Short": "nr",
+      "Aliases": [
+        "no-repack"
+      ],
+      "Type": 0,
+      "EnumValues": null,
+      "Default": "enabled",
+      "HelpText": "whether to enable weight repacking (default: enabled)",
+      "Group": "common"
     },
     "repeat-last-n": {
       "Long": "repeat-last-n",
@@ -1476,6 +1440,18 @@
       "EnumValues": null,
       "Default": "disabled",
       "HelpText": "path to save slot kv cache (default: disabled)",
+      "Group": "example-specific"
+    },
+    "slots": {
+      "Long": "slots",
+      "Short": "",
+      "Aliases": [
+        "no-slots"
+      ],
+      "Type": 0,
+      "EnumValues": null,
+      "Default": "enabled",
+      "HelpText": "expose slots monitoring endpoint (default: enabled)",
       "Group": "example-specific"
     },
     "spec-replace": {
@@ -1742,6 +1718,30 @@
       "EnumValues": null,
       "Default": null,
       "HelpText": "use Gemma 3 4B QAT (note: can download weights from the internet)",
+      "Group": "example-specific"
+    },
+    "warmup": {
+      "Long": "warmup",
+      "Short": "",
+      "Aliases": [
+        "no-warmup"
+      ],
+      "Type": 0,
+      "EnumValues": null,
+      "Default": "enabled",
+      "HelpText": "whether to perform warmup with an empty run (default: enabled)",
+      "Group": "example-specific"
+    },
+    "webui": {
+      "Long": "webui",
+      "Short": "",
+      "Aliases": [
+        "no-webui"
+      ],
+      "Type": 0,
+      "EnumValues": null,
+      "Default": "enabled",
+      "HelpText": "whether to enable the Web UI (default: enabled)",
       "Group": "example-specific"
     },
     "xtc-probability": {
