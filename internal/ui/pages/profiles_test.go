@@ -1,6 +1,7 @@
 package pages
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/quantmind-br/llama-cpp-loader/internal/domain"
 	"github.com/quantmind-br/llama-cpp-loader/internal/service/profilestore"
+	"github.com/quantmind-br/llama-cpp-loader/internal/ui/components"
 )
 
 func TestProfilesPage_LoadsExistingProfile(t *testing.T) {
@@ -101,5 +103,38 @@ func TestProfilesPage_ValidationDetectsUbatchOverBatch(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected ubatch-size error in report; got Errors=%v Warnings=%v", report.Errors, report.Warnings)
+	}
+}
+
+type stubScanner struct{}
+
+func (stubScanner) Scan(ctx context.Context, paths []string) (<-chan domain.ScanEvent, error) {
+	ch := make(chan domain.ScanEvent, 1)
+	close(ch)
+	return ch, nil
+}
+
+func TestProfilesPage_PickerWritesDraftModel(t *testing.T) {
+	dir := t.TempDir()
+	store, err := profilestore.NewFSStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page := NewProfilesPage(store, domain.FlagSchema{}).WithModelScanner(stubScanner{}, nil)
+
+	// Start a new draft so editing is active.
+	model, _ := page.startNew()
+	page = model.(ProfilesPage)
+	page.editing = true
+
+	// Simulate ModelPickedMsg landing in Update.
+	updated, _ := page.Update(components.ModelPickedMsg{Path: "/picked/model.gguf"})
+	page = updated.(ProfilesPage)
+
+	if page.draft.Model != "/picked/model.gguf" {
+		t.Fatalf("draft.Model = %q, want /picked/model.gguf", page.draft.Model)
+	}
+	if page.pickerActive {
+		t.Errorf("pickerActive = true, want false after pick")
 	}
 }
