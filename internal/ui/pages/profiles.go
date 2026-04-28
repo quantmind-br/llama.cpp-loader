@@ -7,6 +7,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/list"
+	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
@@ -34,6 +35,12 @@ type ProfilesPage struct {
 	confirmDelete bool
 	confirmForm   *huh.Form
 	confirmAnswer *bool // heap-allocated so address remains valid across Update copies
+
+	// Advanced sub-tab state.
+	advanced       table.Model
+	advancedAll    []table.Row
+	advancedFilter string
+	filterMode     bool
 
 	// Status feedback.
 	flash string
@@ -72,11 +79,14 @@ func NewProfilesPage(store profilestore.Store, schema domain.FlagSchema) Profile
 	l.SetShowHelp(false)
 	l.SetShowStatusBar(false)
 
+	tbl := newAdvancedTable(schema, 100, 12)
 	return ProfilesPage{
-		store:    store,
-		schema:   schema,
-		list:     l,
-		listKeys: defaultProfilesKeys(),
+		store:       store,
+		schema:      schema,
+		advanced:    tbl,
+		advancedAll: tbl.Rows(),
+		list:        l,
+		listKeys:    defaultProfilesKeys(),
 	}
 }
 
@@ -132,7 +142,17 @@ func (p ProfilesPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (p ProfilesPage) View() string {
 	if p.editing && p.form != nil {
 		header := theme.Title.Render(fmt.Sprintf("Editor — [%s]   ctrl+t to switch", p.subTab))
-		return lipgloss.JoinVertical(lipgloss.Left, header, p.form.View())
+		var body string
+		if p.subTab == subTabEssentials {
+			body = p.form.View()
+		} else {
+			body = p.advanced.View()
+		}
+		filterLine := ""
+		if p.subTab == subTabAdvanced {
+			filterLine = theme.Subtitle.Render(fmt.Sprintf("filter: %q  (/ to edit, esc to clear)", p.advancedFilter))
+		}
+		return lipgloss.JoinVertical(lipgloss.Left, header, body, filterLine)
 	}
 	if p.confirmDelete && p.confirmForm != nil {
 		return p.confirmForm.View()
@@ -198,6 +218,28 @@ func (p ProfilesPage) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			p.subTab = subTabEssentials
 		}
 		return p, nil
+	}
+
+	if p.subTab == subTabAdvanced {
+		switch msg.String() {
+		case "/":
+			p.filterMode = !p.filterMode
+			return p, nil
+		case "backspace":
+			if p.filterMode && len(p.advancedFilter) > 0 {
+				p.advancedFilter = p.advancedFilter[:len(p.advancedFilter)-1]
+				p.advanced.SetRows(filterRows(p.advancedAll, p.advancedFilter))
+			}
+			return p, nil
+		}
+		if p.filterMode && len(msg.Runes) == 1 {
+			p.advancedFilter += string(msg.Runes)
+			p.advanced.SetRows(filterRows(p.advancedAll, p.advancedFilter))
+			return p, nil
+		}
+		t, cmd := p.advanced.Update(msg)
+		p.advanced = t
+		return p, cmd
 	}
 
 	updated, cmd := p.form.Update(msg)
