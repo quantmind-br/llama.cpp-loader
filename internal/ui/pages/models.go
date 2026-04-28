@@ -228,5 +228,38 @@ func (p ModelsPage) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (p ModelsPage) View() string {
 	header := theme.Title.Render("Models")
-	return lipgloss.JoinVertical(lipgloss.Left, header, p.table.View())
+	statusLine := p.renderStatus()
+	filterLine := ""
+	if p.filterMode || p.filter != "" {
+		filterLine = theme.Subtitle.Render(fmt.Sprintf("filter: %q", p.filter))
+	}
+	help := theme.Subtitle.Render("[/] filter  [R] rescan  [enter] actions  [esc] clear")
+	footer := ""
+	if p.flash != "" {
+		footer = theme.Subtitle.Render(p.flash)
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, header, statusLine, p.table.View(), filterLine, help, footer)
+}
+
+func (p ModelsPage) renderStatus() string {
+	if len(p.paths) == 0 {
+		return theme.Subtitle.Render("no search paths configured")
+	}
+	parts := make([]string, 0, len(p.paths))
+	for _, root := range p.paths {
+		st := p.statusMap[root]
+		var label string
+		switch st.state {
+		case "scanning":
+			label = theme.Subtitle.Render(fmt.Sprintf("%s [scanning]", root))
+		case "scanned":
+			label = theme.OK.Render(fmt.Sprintf("%s [%d]", root, st.count))
+		case "error":
+			label = theme.Error.Render(fmt.Sprintf("%s [error: %s]", root, st.err))
+		default:
+			label = theme.Subtitle.Render(root)
+		}
+		parts = append(parts, label)
+	}
+	return strings.Join(parts, "  ")
 }
