@@ -1,6 +1,9 @@
 package llamahelp
 
 import (
+	"bytes"
+	"encoding/json"
+	"flag"
 	"os"
 	"reflect"
 	"testing"
@@ -279,5 +282,39 @@ func TestParseHelp_SmokeOnFixture(t *testing.T) {
 	// Group should be set for at least one common-section flag.
 	if spec, ok := schema.Flags["ctx-size"]; ok && spec.Group != "common" {
 		t.Errorf("ctx-size group=%q, want %q", spec.Group, "common")
+	}
+}
+
+// TestGenerateGolden runs only with -update flag; commits the parsed schema
+// so future regressions show up as JSON diff.
+var updateGolden = flag.Bool("update", false, "regenerate golden files")
+
+func TestParseHelp_Golden(t *testing.T) {
+	data, err := os.ReadFile("../../../testdata/help-v7376.txt")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	schema, err := ParseHelp(data)
+	if err != nil {
+		t.Fatalf("ParseHelp: %v", err)
+	}
+	got, err := json.MarshalIndent(schema, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	goldenPath := "../../../testdata/help-v7376.golden.json"
+	if *updateGolden {
+		if err := os.WriteFile(goldenPath, got, 0o644); err != nil {
+			t.Fatalf("write golden: %v", err)
+		}
+		t.Log("golden updated")
+		return
+	}
+	want, err := os.ReadFile(goldenPath)
+	if err != nil {
+		t.Fatalf("read golden (run with -update first): %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("golden mismatch.\nDiff: run `go test ./internal/service/llamahelp -update` and inspect the diff with `git diff`.")
 	}
 }
