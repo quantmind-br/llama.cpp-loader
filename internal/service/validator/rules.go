@@ -2,6 +2,7 @@ package validator
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/quantmind-br/llama-cpp-loader/internal/domain"
 )
@@ -100,6 +101,23 @@ func applyCrossFieldRules(p domain.Profile, rep Report) Report {
 }
 
 func applyExistenceRules(p domain.Profile, rep Report) Report {
+	if p.Model == "" {
+		return rep
+	}
+	if _, err := os.Stat(p.Model); err != nil {
+		if os.IsNotExist(err) {
+			return appendIssue(rep, FieldIssue{
+				Field:    "model",
+				Message:  "model file does not exist",
+				Severity: SeverityError,
+			})
+		}
+		return appendIssue(rep, FieldIssue{
+			Field:    "model",
+			Message:  "model path stat failed: " + err.Error(),
+			Severity: SeverityError,
+		})
+	}
 	return rep
 }
 

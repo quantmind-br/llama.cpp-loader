@@ -1,6 +1,7 @@
 package validator
 
 import (
+	"os"
 	"testing"
 
 	"github.com/quantmind-br/llama-cpp-loader/internal/domain"
@@ -114,6 +115,33 @@ func TestValidator_CrossFieldRules(t *testing.T) {
 			}
 			if tc.wantField != "" && len(rep.Errors) > 0 && rep.Errors[0].Field != tc.wantField {
 				t.Errorf("Errors[0].Field=%q, want %q", rep.Errors[0].Field, tc.wantField)
+			}
+		})
+	}
+}
+
+func TestValidator_ModelExistence(t *testing.T) {
+	tmp := t.TempDir()
+	existing := tmp + "/m.gguf"
+	if err := os.WriteFile(existing, []byte("g"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	v := New()
+	cases := []struct {
+		name     string
+		model    string
+		wantErrs int
+	}{
+		{"empty path no error (rule only applies when set)", "", 0},
+		{"existing path no error", existing, 0},
+		{"missing path errors", tmp + "/nope.gguf", 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := domain.Profile{ID: "x", Model: tc.model}
+			rep := v.Validate(p, domain.FlagSchema{})
+			if got := len(rep.Errors); got != tc.wantErrs {
+				t.Errorf("Errors=%d (%v), want %d", got, rep.Errors, tc.wantErrs)
 			}
 		})
 	}
