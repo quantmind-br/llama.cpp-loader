@@ -3,10 +3,12 @@ package pages
 
 import (
 	"fmt"
+	"strconv"
 
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/quantmind-br/llama-cpp-loader/internal/domain"
@@ -25,10 +27,10 @@ type ProfilesPage struct {
 
 	// Detail/edit state.
 	editing       bool
-	form          interface{} // Placeholder for *huh.Form (task 1.6)
+	form          *huh.Form
 	draft         profileDraft
 	confirmDelete bool
-	confirmForm   interface{} // Placeholder for *huh.Form (task 1.7)
+	confirmForm   *huh.Form
 
 	// Status feedback.
 	flash string
@@ -142,12 +144,10 @@ func (p ProfilesPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (p ProfilesPage) View() string {
 	if p.editing && p.form != nil {
-		// Task 1.6 will cast form to *huh.Form and call View()
-		return fmt.Sprintf("Form editing: %v", p.form)
+		return p.form.View()
 	}
 	if p.confirmDelete && p.confirmForm != nil {
-		// Task 1.7 will cast confirmForm to *huh.Form and call View()
-		return fmt.Sprintf("Confirm delete: %v", p.confirmForm)
+		return p.confirmForm.View()
 	}
 
 	left := theme.Pane.Width(p.width / 3).Render(p.list.View())
@@ -182,6 +182,130 @@ func (p ProfilesPage) detailView() string {
 
 // Stubs to be filled in by tasks 1.6, 1.7, 1.8.
 
-func (p ProfilesPage) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd)    { return p, nil }
+func (p ProfilesPage) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, p.listKeys.New):
+		return p.startNew()
+	case key.Matches(msg, p.listKeys.Edit):
+		return p.startEditSelected()
+	case key.Matches(msg, p.listKeys.Duplicate):
+		return p.duplicateSelected()
+	case key.Matches(msg, p.listKeys.Delete):
+		return p.askDeleteSelected()
+	}
+
+	updated, cmd := p.list.Update(msg)
+	p.list = updated
+	return p, cmd
+}
+
 func (p ProfilesPage) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd)    { return p, nil }
 func (p ProfilesPage) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) { return p, nil }
+
+func (p ProfilesPage) startNew() (tea.Model, tea.Cmd) {
+	p.draft = profileDraft{
+		ID:        "",
+		Name:      "New Profile",
+		NGL:       "99",
+		CtxSize:   "8192",
+		Port:      "8080",
+		FlashAttn: true,
+		isNew:     true,
+	}
+	p.form = buildEditorForm(&p.draft)
+	p.editing = true
+	return p, p.form.Init()
+}
+
+func (p ProfilesPage) startEditSelected() (tea.Model, tea.Cmd) {
+	sel, ok := p.list.SelectedItem().(item)
+	if !ok {
+		return p, nil
+	}
+	pr := sel.p
+	p.draft = profileDraft{
+		ID:          pr.ID,
+		Name:        pr.Name,
+		Description: pr.Description,
+		Model:       pr.Model,
+		NGL:         argString(pr.Args["ngl"]),
+		CtxSize:     argString(pr.Args["ctx-size"]),
+		Port:        argString(pr.Args["port"]),
+		FlashAttn:   argBool(pr.Args["flash-attn"]),
+	}
+	p.form = buildEditorForm(&p.draft)
+	p.editing = true
+	return p, p.form.Init()
+}
+
+func (p ProfilesPage) duplicateSelected() (tea.Model, tea.Cmd) {
+	sel, ok := p.list.SelectedItem().(item)
+	if !ok {
+		return p, nil
+	}
+	newID := sel.p.ID + "-copy"
+	if _, err := p.store.Duplicate(sel.p.ID, newID); err != nil {
+		p.flash = "duplicate failed: " + err.Error()
+		return p, nil
+	}
+	p.flash = "duplicated as " + newID
+	return p, p.loadCmd()
+}
+
+func (p ProfilesPage) askDeleteSelected() (tea.Model, tea.Cmd) {
+	sel, ok := p.list.SelectedItem().(item)
+	if !ok {
+		return p, nil
+	}
+	id := sel.p.ID
+	confirm := false
+	form := huh.NewForm(huh.NewGroup(
+		huh.NewConfirm().
+			Title("Delete profile " + id + "?").
+			Affirmative("Delete").
+			Negative("Cancel").
+			Value(&confirm),
+	)).WithShowHelp(false).WithShowErrors(false)
+
+	p.confirmForm = form
+	p.confirmDelete = true
+	// Stash the id+answer pointer so updateConfirm can act on submit.
+	p.draft = profileDraft{ID: id} // reuse draft.ID just to carry the id
+	return p, form.Init()
+}
+
+func argString(v any) string {
+	switch t := v.(type) {
+	case nil:
+		return ""
+	case string:
+		return t
+	case float64:
+		return strconv.FormatFloat(t, 'f', -1, 64)
+	case int:
+		return strconv.Itoa(t)
+	default:
+		return fmt.Sprintf("%v", t)
+	}
+}
+
+func argBool(v any) bool {
+	b, _ := v.(bool)
+	return b
+}
+
+func buildEditorForm(d *profileDraft) *huh.Form {
+	return huh.NewForm(
+		huh.NewGroup(
+			huh.NewInput().Title("Name").Value(&d.Name),
+			huh.NewInput().Title("Description").Value(&d.Description),
+			huh.NewInput().Title("Model path").Value(&d.Model),
+		),
+		huh.NewGroup(
+			huh.NewInput().Title("ngl (gpu layers)").Value(&d.NGL),
+			huh.NewInput().Title("ctx-size").Value(&d.CtxSize),
+			huh.NewInput().Title("port").Value(&d.Port),
+			huh.NewConfirm().Title("flash-attn?").Value(&d.FlashAttn).Affirmative("Yes").Negative("No"),
+		),
+	).WithShowHelp(true)
+}
