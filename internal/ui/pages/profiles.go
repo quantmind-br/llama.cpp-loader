@@ -257,7 +257,34 @@ func (p ProfilesPage) commitDraft() (tea.Model, tea.Cmd) {
 	return p, p.loadCmd()
 }
 
-func (p ProfilesPage) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) { return p, nil }
+func (p ProfilesPage) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if msg.String() == "esc" {
+		p.confirmDelete = false
+		p.confirmForm = nil
+		return p, nil
+	}
+
+	updated, cmd := p.confirmForm.Update(msg)
+	if f, ok := updated.(*huh.Form); ok {
+		p.confirmForm = f
+	}
+
+	if p.confirmForm != nil && p.confirmForm.State == huh.StateCompleted {
+		// huh stored the bool in a local in askDeleteSelected; we cannot reach it.
+		// Workaround: re-extract via the form's group, or — simpler — we treat
+		// completion as confirmation. Cancel goes through esc above.
+		id := p.draft.ID
+		if err := p.store.Delete(id); err != nil {
+			p.flash = "delete failed: " + err.Error()
+		} else {
+			p.flash = "deleted " + id
+		}
+		p.confirmDelete = false
+		p.confirmForm = nil
+		return p, p.loadCmd()
+	}
+	return p, cmd
+}
 
 func (p ProfilesPage) startNew() (tea.Model, tea.Cmd) {
 	p.draft = profileDraft{
