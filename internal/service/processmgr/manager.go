@@ -82,6 +82,7 @@ func (m *fsManager) Launch(p domain.Profile, mode LaunchMode) (domain.RunningIns
 		_ = logF.Close()
 		return domain.RunningInstance{}, fmt.Errorf("start llama-server: %w", err)
 	}
+	_ = logF.Close() // child inherited its own fd; drop ours
 
 	inst := domain.RunningInstance{
 		ProfileID:  p.ID,

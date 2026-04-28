@@ -1,6 +1,7 @@
 package processmgr
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"path/filepath"
@@ -97,25 +98,9 @@ func TestManager_LaunchBackground_PortBusy(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected ErrPortBusy, got nil")
 	}
-	if !errorsIs(err, ErrPortBusy) {
+	if !errors.Is(err, ErrPortBusy) {
 		t.Fatalf("err = %v, want ErrPortBusy", err)
 	}
-}
-
-// errorsIs is a small wrapper to keep imports tidy across test files.
-func errorsIs(err, target error) bool {
-	for e := err; e != nil; {
-		if e == target {
-			return true
-		}
-		type unwrapper interface{ Unwrap() error }
-		u, ok := e.(unwrapper)
-		if !ok {
-			return false
-		}
-		e = u.Unwrap()
-	}
-	return false
 }
 
 func TestManager_WaitHealthy_TimesOut(t *testing.T) {
@@ -125,7 +110,7 @@ func TestManager_WaitHealthy_TimesOut(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected timeout error, got nil")
 	}
-	if !errorsIs(err, ErrHealthCheckTimeout) {
+	if !errors.Is(err, ErrHealthCheckTimeout) {
 		t.Fatalf("err = %v, want ErrHealthCheckTimeout", err)
 	}
 }
