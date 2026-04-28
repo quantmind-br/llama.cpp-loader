@@ -23,6 +23,7 @@ const (
 	// ScanEventError is emitted when a root path fails (e.g., ENOENT).
 	// Per-file read errors do not abort the scan; they are silently
 	// degraded to a ModelFile with empty Quant/Params.
+	// Terminal for that root: no ScanEventProgress follows on error.
 	ScanEventError
 	// ScanEventDone is emitted exactly once after all roots are visited.
 	ScanEventDone

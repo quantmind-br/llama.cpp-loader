@@ -170,6 +170,9 @@ func formatParams(n uint64) string {
 			return fmt.Sprintf("%dB", whole)
 		}
 		tenths := (rem + 50_000_000) / 100_000_000
+		if tenths == 10 {
+			return fmt.Sprintf("%dB", whole+1)
+		}
 		return fmt.Sprintf("%d.%dB", whole, tenths)
 	case n >= 1_000_000:
 		return fmt.Sprintf("%dM", n/1_000_000)

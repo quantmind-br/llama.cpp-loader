@@ -115,3 +115,24 @@ func writeGGUFString(buf *bytes.Buffer, s string) {
 	binary.Write(buf, binary.LittleEndian, uint64(len(s)))
 	buf.WriteString(s)
 }
+
+func TestFormatParams(t *testing.T) {
+	cases := []struct {
+		n    uint64
+		want string
+	}{
+		{32_000_000_000, "32B"},
+		{7_000_000_000, "7B"},
+		{6_700_000_000, "6.7B"},
+		{1_950_000_000, "2B"},   // tenths == 10 must roll into whole
+		{1_949_999_999, "1.9B"}, // round down boundary
+		{500_000_000, "500M"},
+		{12_345, "12345"},
+	}
+	for _, tc := range cases {
+		got := formatParams(tc.n)
+		if got != tc.want {
+			t.Errorf("formatParams(%d) = %q, want %q", tc.n, got, tc.want)
+		}
+	}
+}
