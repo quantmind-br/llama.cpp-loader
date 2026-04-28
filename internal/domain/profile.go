@@ -1,7 +1,11 @@
 // Package domain holds shared types with zero external dependencies.
 package domain
 
-import "time"
+import (
+	"strings"
+	"time"
+	"unicode"
+)
 
 // SchemaVersion is the current Profile JSON schema version.
 const SchemaVersion = 1
@@ -32,4 +36,23 @@ type ProfileMeta struct {
 	CreatedAt  time.Time  `json:"createdAt"`
 	UpdatedAt  time.Time  `json:"updatedAt"`
 	LastUsedAt *time.Time `json:"lastUsedAt,omitempty"`
+}
+
+// Slugify produces an ASCII kebab-case ID safe for filenames.
+func Slugify(s string) string {
+	var b strings.Builder
+	prevDash := true
+	for _, r := range strings.ToLower(s) {
+		switch {
+		case unicode.IsLetter(r) && r < 128, unicode.IsDigit(r) && r < 128:
+			b.WriteRune(r)
+			prevDash = false
+		default:
+			if !prevDash {
+				b.WriteByte('-')
+				prevDash = true
+			}
+		}
+	}
+	return strings.Trim(b.String(), "-")
 }
