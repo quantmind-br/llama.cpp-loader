@@ -75,6 +75,13 @@ func (m RootModel) WithProfilesPage(p tea.Model) RootModel {
 	return m
 }
 
+// WithStatusWarn sets a warning message on the status bar (used at boot to
+// surface schema fallback notices).
+func (m RootModel) WithStatusWarn(msg string) RootModel {
+	m.status.SetMessage(components.StatusWarn, msg)
+	return m
+}
+
 func (m RootModel) Init() tea.Cmd {
 	cmds := make([]tea.Cmd, 0, len(m.pages))
 	for _, p := range m.pages {

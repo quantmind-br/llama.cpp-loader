@@ -4,21 +4,26 @@ package pages
 import (
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/list"
+	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/quantmind-br/llama-cpp-loader/internal/domain"
 	"github.com/quantmind-br/llama-cpp-loader/internal/service/profilestore"
+	"github.com/quantmind-br/llama-cpp-loader/internal/service/validator"
 	"github.com/quantmind-br/llama-cpp-loader/internal/ui/theme"
 )
 
 // ProfilesPage is the master-detail page for managing profiles.
 type ProfilesPage struct {
-	store profilestore.Store
+	store     profilestore.Store
+	schema    domain.FlagSchema
+	validator validator.Validator
 
 	list      list.Model
 	listKeys  profilesKeyMap
@@ -27,23 +32,25 @@ type ProfilesPage struct {
 
 	// Detail/edit state.
 	editing       bool
+	subTab        subTab
 	form          *huh.Form
 	draft         profileDraft
 	confirmDelete bool
 	confirmForm   *huh.Form
 	confirmAnswer *bool // heap-allocated so address remains valid across Update copies
 
+	// Advanced sub-tab state.
+	advanced       table.Model
+	advancedAll    []table.Row
+	advancedFilter string
+	filterMode     bool
+
 	// Status feedback.
 	flash string
 }
 
 type profilesKeyMap struct {
-	New       key.Binding
-	Save      key.Binding
-	Duplicate key.Binding
-	Delete    key.Binding
-	Edit      key.Binding
-	Cancel    key.Binding
+	New, Save, Duplicate, Delete, Edit, Cancel, Tab key.Binding
 }
 
 func defaultProfilesKeys() profilesKeyMap {
@@ -54,20 +61,8 @@ func defaultProfilesKeys() profilesKeyMap {
 		Delete:    key.NewBinding(key.WithKeys("x"), key.WithHelp("x", "del")),
 		Edit:      key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "edit")),
 		Cancel:    key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "cancel")),
+		Tab:       key.NewBinding(key.WithKeys("ctrl+t"), key.WithHelp("ctrl+t", "tab editor")),
 	}
-}
-
-// profileDraft is the editor state, mapped from huh form back to a Profile on save.
-type profileDraft struct {
-	ID          string // immutable once created
-	Name        string
-	Description string
-	Model       string
-	NGL         string // strings — converted on save
-	CtxSize     string
-	Port        string
-	FlashAttn   bool
-	isNew       bool
 }
 
 // item adapts domain.Profile to bubbles/list.
@@ -79,18 +74,23 @@ func (i item) Title() string       { return i.p.Name }
 func (i item) Description() string { return i.p.ID }
 func (i item) FilterValue() string { return i.p.Name + " " + i.p.ID }
 
-// NewProfilesPage constructs the page wired to a Store.
-func NewProfilesPage(store profilestore.Store) ProfilesPage {
+// NewProfilesPage constructs the page wired to a Store and FlagSchema.
+func NewProfilesPage(store profilestore.Store, schema domain.FlagSchema) ProfilesPage {
 	delegate := list.NewDefaultDelegate()
 	l := list.New(nil, delegate, 0, 0)
 	l.Title = "Profiles"
 	l.SetShowHelp(false)
 	l.SetShowStatusBar(false)
 
+	tbl := newAdvancedTable(schema, 100, 12)
 	return ProfilesPage{
-		store:    store,
-		list:     l,
-		listKeys: defaultProfilesKeys(),
+		store:       store,
+		schema:      schema,
+		validator:   validator.New(),
+		advanced:    tbl,
+		advancedAll: tbl.Rows(),
+		list:        l,
+		listKeys:    defaultProfilesKeys(),
 	}
 }
 
@@ -145,7 +145,27 @@ func (p ProfilesPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (p ProfilesPage) View() string {
 	if p.editing && p.form != nil {
-		return p.form.View()
+		header := theme.Title.Render(fmt.Sprintf("Editor — [%s]   ctrl+t to switch", p.subTab))
+		var body string
+		if p.subTab == subTabEssentials {
+			body = p.form.View()
+		} else {
+			body = p.advanced.View()
+		}
+		report := p.validator.Validate(p.previewProfile(), p.schema)
+		var lines []string
+		for _, e := range report.Errors {
+			lines = append(lines, theme.Error.Render("✗ "+e.Field+": "+e.Message))
+		}
+		for _, w := range report.Warnings {
+			lines = append(lines, theme.Warn.Render("! "+w.Field+": "+w.Message))
+		}
+		filterLine := ""
+		if p.subTab == subTabAdvanced {
+			filterLine = theme.Subtitle.Render(fmt.Sprintf("filter: %q", p.advancedFilter))
+		}
+		footer := strings.Join(lines, "\n")
+		return lipgloss.JoinVertical(lipgloss.Left, header, body, filterLine, footer)
 	}
 	if p.confirmDelete && p.confirmForm != nil {
 		return p.confirmForm.View()
@@ -204,6 +224,36 @@ func (p ProfilesPage) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		p.form = nil
 		return p, nil
 	}
+	if key.Matches(msg, p.listKeys.Tab) {
+		if p.subTab == subTabEssentials {
+			p.subTab = subTabAdvanced
+		} else {
+			p.subTab = subTabEssentials
+		}
+		return p, nil
+	}
+
+	if p.subTab == subTabAdvanced {
+		switch msg.String() {
+		case "/":
+			p.filterMode = !p.filterMode
+			return p, nil
+		case "backspace":
+			if p.filterMode && len(p.advancedFilter) > 0 {
+				p.advancedFilter = p.advancedFilter[:len(p.advancedFilter)-1]
+				p.advanced.SetRows(filterRows(p.advancedAll, p.advancedFilter))
+			}
+			return p, nil
+		}
+		if p.filterMode && len(msg.Runes) == 1 {
+			p.advancedFilter += string(msg.Runes)
+			p.advanced.SetRows(filterRows(p.advancedAll, p.advancedFilter))
+			return p, nil
+		}
+		t, cmd := p.advanced.Update(msg)
+		p.advanced = t
+		return p, cmd
+	}
 
 	updated, cmd := p.form.Update(msg)
 	if f, ok := updated.(*huh.Form); ok {
@@ -225,18 +275,33 @@ func (p ProfilesPage) commitDraft() (tea.Model, tea.Cmd) {
 	ctx, _ := strconv.Atoi(d.CtxSize)
 	port, _ := strconv.Atoi(d.Port)
 
+	args := map[string]any{
+		"ngl":      float64(ngl),
+		"ctx-size": float64(ctx),
+		"port":     float64(port),
+	}
+	if d.FlashAttn != "" {
+		args["flash-attn"] = d.FlashAttn
+	}
+	if v, err := strconv.Atoi(d.BatchSize); err == nil {
+		args["batch-size"] = float64(v)
+	}
+	if v, err := strconv.Atoi(d.UBatchSize); err == nil {
+		args["ubatch-size"] = float64(v)
+	}
+	if d.CacheTypeK != "" {
+		args["cache-type-k"] = d.CacheTypeK
+	}
+	if d.CacheTypeV != "" {
+		args["cache-type-v"] = d.CacheTypeV
+	}
 	pr := domain.Profile{
 		ID:          d.ID,
 		Name:        d.Name,
 		Description: d.Description,
 		Model:       d.Model,
-		Args: map[string]any{
-			"ngl":         float64(ngl),
-			"ctx-size":    float64(ctx),
-			"port":        float64(port),
-			"flash-attn":  d.FlashAttn,
-		},
-		Launch: domain.LaunchConfig{DefaultBackground: true},
+		Args:        args,
+		Launch:      domain.LaunchConfig{DefaultBackground: true},
 	}
 
 	// Preserve existing meta when editing.
@@ -254,6 +319,42 @@ func (p ProfilesPage) commitDraft() (tea.Model, tea.Cmd) {
 	p.editing = false
 	p.form = nil
 	return p, p.loadCmd()
+}
+
+// previewProfile builds a Profile from the current draft (without saving) for
+// the validator. Mirrors commitDraft's mapping but is allocation-only.
+func (p ProfilesPage) previewProfile() domain.Profile {
+	d := p.draft
+	args := map[string]any{}
+	if d.FlashAttn != "" {
+		args["flash-attn"] = d.FlashAttn
+	}
+	if v, err := strconv.Atoi(d.NGL); err == nil {
+		args["ngl"] = float64(v)
+	}
+	if v, err := strconv.Atoi(d.CtxSize); err == nil {
+		args["ctx-size"] = float64(v)
+	}
+	if v, err := strconv.Atoi(d.BatchSize); err == nil {
+		args["batch-size"] = float64(v)
+	}
+	if v, err := strconv.Atoi(d.UBatchSize); err == nil {
+		args["ubatch-size"] = float64(v)
+	}
+	if v, err := strconv.Atoi(d.Port); err == nil {
+		args["port"] = float64(v)
+	}
+	if d.CacheTypeK != "" {
+		args["cache-type-k"] = d.CacheTypeK
+	}
+	if d.CacheTypeV != "" {
+		args["cache-type-v"] = d.CacheTypeV
+	}
+	return domain.Profile{
+		ID:    p.draft.ID,
+		Model: d.Model,
+		Args:  args,
+	}
 }
 
 func (p ProfilesPage) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -291,15 +392,19 @@ func (p ProfilesPage) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (p ProfilesPage) startNew() (tea.Model, tea.Cmd) {
 	p.draft = profileDraft{
-		ID:        "",
-		Name:      "New Profile",
-		NGL:       "99",
-		CtxSize:   "8192",
-		Port:      "8080",
-		FlashAttn: true,
-		isNew:     true,
+		ID:         "",
+		Name:       "New Profile",
+		NGL:        "99",
+		CtxSize:    "8192",
+		BatchSize:  "2048",
+		UBatchSize: "512",
+		Port:       "8080",
+		FlashAttn:  "auto",
+		CacheTypeK: "q8_0",
+		CacheTypeV: "q8_0",
+		isNew:      true,
 	}
-	p.form = buildEditorForm(&p.draft)
+	p.form = buildEditorForm(&p.draft, p.schema)
 	p.editing = true
 	return p, p.form.Init()
 }
@@ -317,10 +422,14 @@ func (p ProfilesPage) startEditSelected() (tea.Model, tea.Cmd) {
 		Model:       pr.Model,
 		NGL:         argString(pr.Args["ngl"]),
 		CtxSize:     argString(pr.Args["ctx-size"]),
+		BatchSize:   argString(pr.Args["batch-size"]),
+		UBatchSize:  argString(pr.Args["ubatch-size"]),
 		Port:        argString(pr.Args["port"]),
-		FlashAttn:   argBool(pr.Args["flash-attn"]),
+		FlashAttn:   flashAttnToString(pr.Args["flash-attn"]),
+		CacheTypeK:  argString(pr.Args["cache-type-k"]),
+		CacheTypeV:  argString(pr.Args["cache-type-v"]),
 	}
-	p.form = buildEditorForm(&p.draft)
+	p.form = buildEditorForm(&p.draft, p.schema)
 	p.editing = true
 	return p, p.form.Init()
 }
@@ -360,40 +469,4 @@ func (p ProfilesPage) askDeleteSelected() (tea.Model, tea.Cmd) {
 	// Stash the id so updateConfirm can act on submit.
 	p.draft = profileDraft{ID: id} // reuse draft.ID just to carry the id
 	return p, form.Init()
-}
-
-func argString(v any) string {
-	switch t := v.(type) {
-	case nil:
-		return ""
-	case string:
-		return t
-	case float64:
-		return strconv.FormatFloat(t, 'f', -1, 64)
-	case int:
-		return strconv.Itoa(t)
-	default:
-		return fmt.Sprintf("%v", t)
-	}
-}
-
-func argBool(v any) bool {
-	b, _ := v.(bool)
-	return b
-}
-
-func buildEditorForm(d *profileDraft) *huh.Form {
-	return huh.NewForm(
-		huh.NewGroup(
-			huh.NewInput().Title("Name").Value(&d.Name),
-			huh.NewInput().Title("Description").Value(&d.Description),
-			huh.NewInput().Title("Model path").Value(&d.Model),
-		),
-		huh.NewGroup(
-			huh.NewInput().Title("ngl (gpu layers)").Value(&d.NGL),
-			huh.NewInput().Title("ctx-size").Value(&d.CtxSize),
-			huh.NewInput().Title("port").Value(&d.Port),
-			huh.NewConfirm().Title("flash-attn?").Value(&d.FlashAttn).Affirmative("Yes").Negative("No"),
-		),
-	).WithShowHelp(true)
 }
