@@ -72,3 +72,34 @@ func TestProfilesPage_NewProfileSavesViaStore(t *testing.T) {
 		t.Errorf("List len = %d, want 0", len(got))
 	}
 }
+
+func TestProfilesPage_ValidationDetectsUbatchOverBatch(t *testing.T) {
+	dir := t.TempDir()
+	store, err := profilestore.NewFSStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	page := NewProfilesPage(store, domain.FlagSchema{})
+	page.draft = profileDraft{
+		ID:         "x",
+		Name:       "X",
+		BatchSize:  "2048",
+		UBatchSize: "4096",
+		isNew:      true,
+	}
+
+	pr := page.previewProfile()
+	report := page.validator.Validate(pr, page.schema)
+
+	found := false
+	for _, e := range report.Errors {
+		if e.Field == "ubatch-size" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected ubatch-size error in report; got Errors=%v Warnings=%v", report.Errors, report.Warnings)
+	}
+}
