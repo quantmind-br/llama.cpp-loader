@@ -11,7 +11,7 @@ func TestValidator_EmptySchemaProducesNoTypeIssues(t *testing.T) {
 	p := domain.Profile{
 		ID:    "x",
 		Name:  "X",
-		Model: "/tmp/nonexistent.gguf",
+		Model: "", // Fixed: was /tmp/nonexistent.gguf, now trips existence rule
 		Args:  map[string]any{},
 	}
 	rep := v.Validate(p, domain.FlagSchema{Flags: map[string]domain.FlagSpec{}})
@@ -55,4 +55,70 @@ func TestValidator_TypeRule(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestValidator_CrossFieldRules(t *testing.T) {
+	schema := domain.FlagSchema{Flags: map[string]domain.FlagSpec{
+		"ctx-size":     {Long: "ctx-size", Type: domain.FlagTypeInt},
+		"batch-size":   {Long: "batch-size", Type: domain.FlagTypeInt},
+		"ubatch-size":  {Long: "ubatch-size", Type: domain.FlagTypeInt},
+		"flash-attn":   {Long: "flash-attn", Type: domain.FlagTypeEnum, EnumValues: []string{"on", "off", "auto"}},
+		"cache-type-k": {Long: "cache-type-k", Type: domain.FlagTypeEnum, EnumValues: cacheTypes()},
+		"cache-type-v": {Long: "cache-type-v", Type: domain.FlagTypeEnum, EnumValues: cacheTypes()},
+		"ngl":          {Long: "n-gpu-layers", Short: "ngl", Type: domain.FlagTypeInt},
+	}}
+	v := New()
+	cases := []struct {
+		name      string
+		args      map[string]any
+		wantErrs  int
+		wantWarns int
+		wantField string
+	}{
+		{
+			name:      "ubatch > batch is error",
+			args:      map[string]any{"batch-size": 2048, "ubatch-size": 4096},
+			wantErrs:  1,
+			wantField: "ubatch-size",
+		},
+		{
+			name:     "ubatch == batch is fine",
+			args:     map[string]any{"batch-size": 2048, "ubatch-size": 2048},
+			wantErrs: 0,
+		},
+		{
+			name:      "flash-attn on with f16 cache warns",
+			args:      map[string]any{"flash-attn": "on", "cache-type-k": "f16", "cache-type-v": "f16"},
+			wantWarns: 1,
+		},
+		{
+			name:      "ctx>32k with ngl<99 warns",
+			args:      map[string]any{"ctx-size": 65536, "ngl": 50},
+			wantWarns: 1,
+		},
+		{
+			name:      "ctx>32k with ngl=99 no warn",
+			args:      map[string]any{"ctx-size": 65536, "ngl": 99},
+			wantWarns: 0,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := domain.Profile{ID: "x", Args: tc.args}
+			rep := v.Validate(p, schema)
+			if got := len(rep.Errors); got != tc.wantErrs {
+				t.Errorf("Errors=%d (%v), want %d", got, rep.Errors, tc.wantErrs)
+			}
+			if got := len(rep.Warnings); got != tc.wantWarns {
+				t.Errorf("Warnings=%d (%v), want %d", got, rep.Warnings, tc.wantWarns)
+			}
+			if tc.wantField != "" && len(rep.Errors) > 0 && rep.Errors[0].Field != tc.wantField {
+				t.Errorf("Errors[0].Field=%q, want %q", rep.Errors[0].Field, tc.wantField)
+			}
+		})
+	}
+}
+
+func cacheTypes() []string {
+	return []string{"f32", "f16", "bf16", "q8_0", "q4_0"}
 }
