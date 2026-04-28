@@ -137,3 +137,22 @@ func TestScanner_EmitsProgressAndDone(t *testing.T) {
 		t.Errorf("done events = %d, want 1", doneCount)
 	}
 }
+
+func TestScanner_ErrorOnMissingRoot(t *testing.T) {
+	s := New()
+	ch, err := s.Scan(context.Background(), []string{"/definitely/does/not/exist/xyz"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := collect(ch)
+
+	errEvents := 0
+	for _, e := range events {
+		if e.Type == domain.ScanEventError {
+			errEvents++
+		}
+	}
+	if errEvents != 1 {
+		t.Fatalf("error events = %d, want 1; got events: %#v", errEvents, events)
+	}
+}
