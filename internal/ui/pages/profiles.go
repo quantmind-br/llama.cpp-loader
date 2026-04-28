@@ -199,7 +199,64 @@ func (p ProfilesPage) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return p, cmd
 }
 
-func (p ProfilesPage) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd)    { return p, nil }
+func (p ProfilesPage) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if msg.String() == "esc" {
+		p.editing = false
+		p.form = nil
+		return p, nil
+	}
+
+	updated, cmd := p.form.Update(msg)
+	if f, ok := updated.(*huh.Form); ok {
+		p.form = f
+	}
+
+	if p.form != nil && p.form.State == huh.StateCompleted {
+		return p.commitDraft()
+	}
+	return p, cmd
+}
+
+func (p ProfilesPage) commitDraft() (tea.Model, tea.Cmd) {
+	d := p.draft
+	if d.ID == "" {
+		d.ID = domain.Slugify(d.Name)
+	}
+	ngl, _ := strconv.Atoi(d.NGL)
+	ctx, _ := strconv.Atoi(d.CtxSize)
+	port, _ := strconv.Atoi(d.Port)
+
+	pr := domain.Profile{
+		ID:          d.ID,
+		Name:        d.Name,
+		Description: d.Description,
+		Model:       d.Model,
+		Args: map[string]any{
+			"ngl":         float64(ngl),
+			"ctx-size":    float64(ctx),
+			"port":        float64(port),
+			"flash-attn":  d.FlashAttn,
+		},
+		Launch: domain.LaunchConfig{DefaultBackground: true},
+	}
+
+	// Preserve existing meta when editing.
+	if !d.isNew {
+		if existing, err := p.store.Get(d.ID); err == nil {
+			pr.Meta = existing.Meta
+		}
+	}
+
+	if err := p.store.Save(pr); err != nil {
+		p.flash = "save failed: " + err.Error()
+	} else {
+		p.flash = "saved " + pr.ID
+	}
+	p.editing = false
+	p.form = nil
+	return p, p.loadCmd()
+}
+
 func (p ProfilesPage) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) { return p, nil }
 
 func (p ProfilesPage) startNew() (tea.Model, tea.Cmd) {
