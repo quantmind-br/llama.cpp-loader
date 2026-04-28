@@ -150,3 +150,46 @@ func TestParseFlagLine_BoolNoPlaceholder(t *testing.T) {
 		})
 	}
 }
+
+func TestParseFlagLine_EnumPlaceholders(t *testing.T) {
+	cases := []struct {
+		name string
+		line string
+		want domain.FlagSpec
+	}{
+		{
+			name: "flash-attn pipe enum",
+			line: "-fa,   --flash-attn [on|off|auto]       set Flash Attention use ('on', 'off', or 'auto', default: 'auto')",
+			want: domain.FlagSpec{
+				Long:       "flash-attn",
+				Short:      "fa",
+				Type:       domain.FlagTypeEnum,
+				EnumValues: []string{"on", "off", "auto"},
+				Default:    "auto",
+				HelpText:   "set Flash Attention use ('on', 'off', or 'auto', default: 'auto')",
+			},
+		},
+		{
+			name: "split-mode brace enum",
+			line: "-sm,   --split-mode {none,layer,row}    how to split the model across multiple GPUs",
+			want: domain.FlagSpec{
+				Long:       "split-mode",
+				Short:      "sm",
+				Type:       domain.FlagTypeEnum,
+				EnumValues: []string{"none", "layer", "row"},
+				HelpText:   "how to split the model across multiple GPUs",
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := parseFlagLine(tc.line)
+			if !ok {
+				t.Fatalf("!ok for %q", tc.line)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("got %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}

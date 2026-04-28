@@ -10,6 +10,11 @@ import (
 
 var sectionHeaderRe = regexp.MustCompile(`^-{5}\s+(.+?)\s+params\s+-{5}$`)
 
+var (
+	bracketEnumRe = regexp.MustCompile(`^\[([^\]]+)\]$`)
+	braceEnumRe   = regexp.MustCompile(`^\{([^}]+)\}$`)
+)
+
 // parseSectionHeader returns the section name (e.g., "common") for a header
 // line, or "" if the line is not a section header.
 func parseSectionHeader(line string) string {
@@ -26,8 +31,9 @@ func parseSectionHeader(line string) string {
 // Two or more spaces separate the alias chunk from the description.
 var flagLineRe = regexp.MustCompile(`^(.*[^ ])\s{2,}(\S.*)$`)
 
-// defaultRe extracts "(default: X)" — first occurrence wins.
-var defaultRe = regexp.MustCompile(`\(default:\s*([^,)]+)`)
+// defaultRe extracts "(default: X)" or ", default: X" — first occurrence wins.
+// The opening paren is optional because enums may use ", default: X" format.
+var defaultRe = regexp.MustCompile(`\(?default:\s*([^,)]+)`)
 
 // parseFlagLine parses a single help line into a FlagSpec. Returns false when
 // the line is not a flag definition (header, blank, continuation).
@@ -55,6 +61,9 @@ func parseFlagLine(line string) (domain.FlagSpec, bool) {
 		spec.Aliases = longs[:len(longs)-1]
 	}
 	spec.Type = inferType(placeholder)
+	if spec.Type == domain.FlagTypeEnum {
+		spec.EnumValues = parseEnumPlaceholder(placeholder)
+	}
 	if d := extractDefault(descChunk); d != nil {
 		spec.Default = coerceDefault(spec.Type, d)
 	}
@@ -89,14 +98,44 @@ func splitAliases(chunk string) (short string, longs []string, placeholder strin
 	return short, longs, placeholder
 }
 
-// inferType maps the placeholder token to a FlagType. Defaults to FlagTypeBool
-// when the placeholder is empty (no value expected).
-func inferType(placeholder string) domain.FlagType {
-	if placeholder == "" {
-		return domain.FlagTypeBool
+// parseEnumPlaceholder returns the enum values when placeholder is "[a|b|c]"
+// or "{a,b,c}". Otherwise returns nil.
+func parseEnumPlaceholder(placeholder string) []string {
+	if m := bracketEnumRe.FindStringSubmatch(placeholder); m != nil {
+		return splitAndTrim(m[1], "|")
 	}
-	// Will be enriched in later tasks (enums, floats, special tokens).
-	return domain.FlagTypeInt
+	if m := braceEnumRe.FindStringSubmatch(placeholder); m != nil {
+		return splitAndTrim(m[1], ",")
+	}
+	return nil
+}
+
+func splitAndTrim(s, sep string) []string {
+	parts := strings.Split(s, sep)
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		out = append(out, strings.TrimSpace(p))
+	}
+	return out
+}
+
+// inferType maps the placeholder token to a FlagType.
+func inferType(placeholder string) domain.FlagType {
+	switch {
+	case placeholder == "":
+		return domain.FlagTypeBool
+	case parseEnumPlaceholder(placeholder) != nil:
+		return domain.FlagTypeEnum
+	}
+	// Fallback: scalar. Distinguishing int vs float vs string is best-effort
+	// using common llama-server placeholders.
+	switch placeholder {
+	case "N", "INDEX", "PORT":
+		return domain.FlagTypeInt
+	case "F", "RATE":
+		return domain.FlagTypeFloat
+	}
+	return domain.FlagTypeString
 }
 
 // extractDefault pulls the first "(default: X)" payload from the description.
@@ -129,6 +168,8 @@ func coerceDefault(t domain.FlagType, raw any) any {
 		case "false", "no", "0":
 			return false
 		}
+	case domain.FlagTypeEnum:
+		return strings.Trim(s, "'\"")
 	}
 	return s
 }
