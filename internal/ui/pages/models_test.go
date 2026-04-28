@@ -118,3 +118,38 @@ func TestModelsPage_ActionUseInNewProfileEmitsMsg(t *testing.T) {
 		t.Fatalf("Path = %q", useMsg.Path)
 	}
 }
+
+// TestModelsPage_RescanDropsStaleEvents ensures events from a previous
+// scan generation do not pollute state after rescan bumps scanID.
+func TestModelsPage_RescanDropsStaleEvents(t *testing.T) {
+	stale := domain.ModelFile{Path: "/old/stale.gguf", Name: "stale.gguf"}
+	scanner := &fakeScanner{}
+	page := NewModelsPage(scanner, []string{"/m"})
+	page.scanID = 1 // simulate post-rescan epoch
+
+	// Stale message tagged with old scanID=0 must be ignored.
+	updated, _ := page.Update(scanEventMsg{
+		scanID: 0,
+		ch:     nil,
+		evt:    domain.ScanEvent{Type: domain.ScanEventFile, Root: "/m", File: &stale},
+	})
+	mp := updated.(ModelsPage)
+	if len(mp.files) != 0 {
+		t.Fatalf("stale event accepted: files = %d, want 0", len(mp.files))
+	}
+
+	// Fresh message tagged with current scanID=1 must land.
+	fresh := domain.ModelFile{Path: "/new/fresh.gguf", Name: "fresh.gguf"}
+	updated, _ = mp.Update(scanEventMsg{
+		scanID: 1,
+		ch:     nil,
+		evt:    domain.ScanEvent{Type: domain.ScanEventFile, Root: "/m", File: &fresh},
+	})
+	mp = updated.(ModelsPage)
+	if len(mp.files) != 1 {
+		t.Fatalf("fresh event dropped: files = %d, want 1", len(mp.files))
+	}
+	if mp.files[0].Name != "fresh.gguf" {
+		t.Errorf("got %q, want fresh.gguf", mp.files[0].Name)
+	}
+}

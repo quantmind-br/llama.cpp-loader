@@ -30,6 +30,7 @@ type ModelsPage struct {
 	scanner modelscanner.Scanner
 	paths   []string
 	cancel  context.CancelFunc
+	scanID  int // epoch; bumped each rescan to discard stale events
 
 	files     []domain.ModelFile
 	statusMap map[string]pathStatus
@@ -87,7 +88,10 @@ func NewModelsPage(scanner modelscanner.Scanner, paths []string) ModelsPage {
 
 // scanStartedMsg delivers the channel + cancel handle from a fresh scan
 // start. State mutations happen when this message lands in Update.
+// scanID matches ModelsPage.scanID at start; stale messages from a
+// previous rescan are discarded by epoch comparison.
 type scanStartedMsg struct {
+	scanID int
 	ch     <-chan domain.ScanEvent
 	cancel context.CancelFunc
 	err    error
@@ -95,40 +99,43 @@ type scanStartedMsg struct {
 
 // scanEventMsg carries one ScanEvent plus the channel for re-arming.
 type scanEventMsg struct {
-	ch  <-chan domain.ScanEvent
-	evt domain.ScanEvent
+	scanID int
+	ch     <-chan domain.ScanEvent
+	evt    domain.ScanEvent
 }
 
 // scanChannelClosedMsg signals the scan goroutine finished and closed
 // its channel.
-type scanChannelClosedMsg struct{}
+type scanChannelClosedMsg struct {
+	scanID int
+}
 
 func (p ModelsPage) Init() tea.Cmd {
-	return startScanCmd(p.scanner, p.paths)
+	return startScanCmd(p.scanner, p.paths, p.scanID)
 }
 
 // startScanCmd builds a Cmd that creates ctx+cancel, kicks off the
 // scanner, and delivers the channel via scanStartedMsg. The Cmd's
 // closure owns the cancel until Update captures it.
-func startScanCmd(scanner modelscanner.Scanner, paths []string) tea.Cmd {
+func startScanCmd(scanner modelscanner.Scanner, paths []string, scanID int) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithCancel(context.Background())
 		ch, err := scanner.Scan(ctx, paths)
 		if err != nil {
 			cancel()
-			return scanStartedMsg{err: err}
+			return scanStartedMsg{scanID: scanID, err: err}
 		}
-		return scanStartedMsg{ch: ch, cancel: cancel}
+		return scanStartedMsg{scanID: scanID, ch: ch, cancel: cancel}
 	}
 }
 
-func waitForScanEvent(ch <-chan domain.ScanEvent) tea.Cmd {
+func waitForScanEvent(ch <-chan domain.ScanEvent, scanID int) tea.Cmd {
 	return func() tea.Msg {
 		evt, ok := <-ch
 		if !ok {
-			return scanChannelClosedMsg{}
+			return scanChannelClosedMsg{scanID: scanID}
 		}
-		return scanEventMsg{ch: ch, evt: evt}
+		return scanEventMsg{scanID: scanID, ch: ch, evt: evt}
 	}
 }
 
@@ -139,6 +146,12 @@ func (p ModelsPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		p.table.SetHeight(msg.Height - 8)
 		return p, nil
 	case scanStartedMsg:
+		if msg.scanID != p.scanID {
+			if msg.cancel != nil {
+				msg.cancel()
+			}
+			return p, nil
+		}
 		if msg.err != nil {
 			for _, root := range p.paths {
 				p.statusMap[root] = pathStatus{state: "error", err: msg.err.Error()}
@@ -146,11 +159,14 @@ func (p ModelsPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return p, nil
 		}
 		p.cancel = msg.cancel
-		return p, waitForScanEvent(msg.ch)
+		return p, waitForScanEvent(msg.ch, msg.scanID)
 	case scanEventMsg:
+		if msg.scanID != p.scanID {
+			return p, waitForScanEvent(msg.ch, msg.scanID)
+		}
 		updated, _ := p.handleScanEvent(msg.evt)
 		next := updated.(ModelsPage)
-		return next, waitForScanEvent(msg.ch)
+		return next, waitForScanEvent(msg.ch, msg.scanID)
 	case scanChannelClosedMsg:
 		return p, nil
 	case actionFormDoneMsg:
@@ -282,13 +298,14 @@ func (p ModelsPage) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			p.cancel()
 			p.cancel = nil
 		}
+		p.scanID++
 		p.flash = "rescan started"
 		p.files = nil
 		for _, root := range p.paths {
 			p.statusMap[root] = pathStatus{state: "scanning"}
 		}
 		p.refreshRows()
-		return p, startScanCmd(p.scanner, p.paths)
+		return p, startScanCmd(p.scanner, p.paths, p.scanID)
 	case key.Matches(msg, p.keys.Enter):
 		if len(p.table.Rows()) == 0 {
 			return p, nil
