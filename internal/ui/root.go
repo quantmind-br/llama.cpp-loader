@@ -75,6 +75,12 @@ func (m RootModel) WithProfilesPage(p tea.Model) RootModel {
 	return m
 }
 
+// WithModelsPage replaces the placeholder Models tab with a real model.
+func (m RootModel) WithModelsPage(p tea.Model) RootModel {
+	m.pages[TabModels] = p
+	return m
+}
+
 // WithStatusWarn sets a warning message on the status bar (used at boot to
 // surface schema fallback notices).
 func (m RootModel) WithStatusWarn(msg string) RootModel {
@@ -94,6 +100,14 @@ func (m RootModel) Init() tea.Cmd {
 
 func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case pages.UseInNewProfileMsg:
+		// Switch to Profiles tab and forward the message so the page
+		// opens a pre-filled new draft.
+		m.active = TabProfiles
+		updated, cmd := m.pages[TabProfiles].Update(msg)
+		m.pages[TabProfiles] = updated
+		return m, cmd
+
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		// forward sized message to all pages so their internal state knows

@@ -7,6 +7,10 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/exp/teatest"
+
+	"github.com/quantmind-br/llama-cpp-loader/internal/domain"
+	"github.com/quantmind-br/llama-cpp-loader/internal/service/profilestore"
+	"github.com/quantmind-br/llama-cpp-loader/internal/ui/pages"
 )
 
 func TestRoot_StartsOnProfilesAndQuitsOnQ(t *testing.T) {
@@ -38,5 +42,22 @@ func TestRoot_TabSwitchByNumber(t *testing.T) {
 
 	if err := tm.Quit(); err != nil {
 		t.Fatalf("Quit returned err: %v", err)
+	}
+}
+
+func TestRoot_UseInNewProfileSwitchesTab(t *testing.T) {
+	dir := t.TempDir()
+	store, err := profilestore.NewFSStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := NewRoot(TabModels).
+		WithProfilesPage(pages.NewProfilesPage(store, domain.FlagSchema{}))
+
+	updated, _ := root.Update(pages.UseInNewProfileMsg{Path: "/x.gguf"})
+	r := updated.(RootModel)
+
+	if r.active != TabProfiles {
+		t.Errorf("active = %d, want TabProfiles=%d", r.active, TabProfiles)
 	}
 }
