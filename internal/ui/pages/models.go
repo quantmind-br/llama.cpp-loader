@@ -222,8 +222,50 @@ func humanSize(n int64) string {
 }
 
 func (p ModelsPage) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// Filled in Task 16.
-	return p, nil
+	switch {
+	case key.Matches(msg, p.keys.Filter):
+		p.filterMode = !p.filterMode
+		return p, nil
+	case key.Matches(msg, p.keys.Cancel):
+		if p.filterMode || p.filter != "" {
+			p.filterMode = false
+			p.filter = ""
+			p.refreshRows()
+			return p, nil
+		}
+	case key.Matches(msg, p.keys.Rescan):
+		if p.cancel != nil {
+			p.cancel()
+			p.cancel = nil
+		}
+		p.flash = "rescan started"
+		p.files = nil
+		for _, root := range p.paths {
+			p.statusMap[root] = pathStatus{state: "scanning"}
+		}
+		p.refreshRows()
+		return p, startScanCmd(p.scanner, p.paths)
+	}
+
+	if p.filterMode {
+		switch msg.String() {
+		case "backspace":
+			if len(p.filter) > 0 {
+				p.filter = p.filter[:len(p.filter)-1]
+				p.refreshRows()
+			}
+			return p, nil
+		}
+		if len(msg.Runes) == 1 {
+			p.filter += string(msg.Runes)
+			p.refreshRows()
+			return p, nil
+		}
+	}
+
+	t, cmd := p.table.Update(msg)
+	p.table = t
+	return p, cmd
 }
 
 func (p ModelsPage) View() string {
