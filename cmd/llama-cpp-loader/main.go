@@ -8,7 +8,9 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/quantmind-br/llama-cpp-loader/internal/config"
+	"github.com/quantmind-br/llama-cpp-loader/internal/service/profilestore"
 	"github.com/quantmind-br/llama-cpp-loader/internal/ui"
+	"github.com/quantmind-br/llama-cpp-loader/internal/ui/pages"
 )
 
 func main() {
@@ -18,12 +20,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	initial := ui.TabProfiles
-	if cfg.UI.DefaultTab != "" {
-		initial = parseTab(cfg.UI.DefaultTab)
+	store, err := profilestore.NewFSStore(cfg.Paths.ProfilesDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "profile store: %v\n", err)
+		os.Exit(1)
 	}
 
-	root := ui.NewRoot(initial)
+	root := ui.NewRoot(parseTab(cfg.UI.DefaultTab)).
+		WithProfilesPage(pages.NewProfilesPage(store))
 
 	prog := tea.NewProgram(root, tea.WithAltScreen())
 	if _, err := prog.Run(); err != nil {
