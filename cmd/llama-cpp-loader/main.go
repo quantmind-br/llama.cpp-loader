@@ -2,12 +2,15 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/quantmind-br/llama-cpp-loader/internal/config"
+	"github.com/quantmind-br/llama-cpp-loader/internal/domain"
 	"github.com/quantmind-br/llama-cpp-loader/internal/service/llamahelp"
 	"github.com/quantmind-br/llama-cpp-loader/internal/service/profilestore"
 	"github.com/quantmind-br/llama-cpp-loader/internal/ui"
@@ -27,14 +30,33 @@ func main() {
 		os.Exit(1)
 	}
 
+	schema, schemaWarn := loadSchema()
+
 	root := ui.NewRoot(parseTab(cfg.UI.DefaultTab)).
-		WithProfilesPage(pages.NewProfilesPage(store, llamahelp.EmbeddedSchema()))
+		WithProfilesPage(pages.NewProfilesPage(store, schema))
+	if schemaWarn != "" {
+		root = root.WithStatusWarn(schemaWarn)
+	}
 
 	prog := tea.NewProgram(root, tea.WithAltScreen())
 	if _, err := prog.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "tui error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// loadSchema attempts to parse llama-server --help. On failure (binary absent,
+// timeout, parse error) it returns the embedded fallback and a warning string
+// suitable for the status bar.
+func loadSchema() (domain.FlagSchema, string) {
+	parser := llamahelp.NewExecParser()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	schema, err := parser.Parse(ctx)
+	if err != nil {
+		return llamahelp.EmbeddedSchema(), fmt.Sprintf("schema fallback: %v", err)
+	}
+	return schema, ""
 }
 
 func parseTab(name string) ui.Tab {
