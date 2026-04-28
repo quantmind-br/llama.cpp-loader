@@ -72,3 +72,33 @@ func TestScanner_FindsSingleGGUF(t *testing.T) {
 		t.Errorf("SizeBytes = %d, want >0", got.SizeBytes)
 	}
 }
+
+func TestScanner_RecursiveAndIgnoresNonGGUF(t *testing.T) {
+	dir := t.TempDir()
+	writeGGUFFile(t, filepath.Join(dir, "top.gguf"), 7_000_000_000)
+	writeGGUFFile(t, filepath.Join(dir, "sub", "deep.gguf"), 13_000_000_000)
+	writeGGUFFile(t, filepath.Join(dir, "sub", "sub2", "deeper.gguf"), 70_000_000_000)
+	if err := os.WriteFile(filepath.Join(dir, "ignore.txt"), []byte("nope"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "sub", "config.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	s := New()
+	ch, err := s.Scan(context.Background(), []string{dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := collect(ch)
+
+	count := 0
+	for _, e := range events {
+		if e.Type == domain.ScanEventFile {
+			count++
+		}
+	}
+	if count != 3 {
+		t.Fatalf("file events = %d, want 3 (got events: %#v)", count, events)
+	}
+}
