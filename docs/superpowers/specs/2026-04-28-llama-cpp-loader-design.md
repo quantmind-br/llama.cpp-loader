@@ -164,7 +164,28 @@ Registry de instâncias background vivas; permite recuperação ao reabrir a TUI
 }
 ```
 
-### 5.4 FlagSchema (em-memória)
+### 5.4 Tipos de domínio adicionais
+
+```go
+type RunningInstance struct {
+    ProfileID  string
+    PID        int
+    Port       int
+    LogPath    string
+    StartedAt  time.Time
+    Background bool
+}
+
+type LogLine struct {
+    Timestamp time.Time
+    Level     string  // INFO | WARN | ERROR | "" se não parseável
+    Text      string
+}
+```
+
+`meta.lastUsedAt` no Profile é atualizado pelo `ProcessManager.Launch` no momento do spawn bem-sucedido (após o `WaitHealthy` retornar 200), via callback no `ProfileStore.Save`.
+
+### 5.5 FlagSchema (em-memória)
 
 Derivado de `llama-server --help` na boot, cacheado por sessão.
 
@@ -217,7 +238,7 @@ type LlamaHelpParser interface {
 - Executa `llama-server --help` e `llama-server --version`.
 - Cache em memória durante a sessão; refresh manual via tecla.
 - Heurística: detecta blocos `-x, --xxx <type>  description (default: ...)`. Tipos inferidos do help text. Enum hardcoded para `cache-type-{k,v}`, `split-mode`.
-- Fallback: schema embutido versionado quando parse falha; UI exibe warning na statusbar.
+- Fallback: schema embutido bundled at compile time (alvo: última versão do `llama.cpp` testada na release; documentada em `internal/service/llamahelp/embedded.go`). UI exibe warning na statusbar incluindo a versão do fallback.
 
 ### 6.3 Validator
 
@@ -262,8 +283,8 @@ type ProcessManager interface {
 type LaunchMode int  // Foreground | Background
 ```
 
-- **Background:** `cmd.Start()` com `SysProcAttr.Setsid = true` (Linux), redireciona stdout/stderr para arquivo em `log_dir`. Persiste entry em `instances.json`.
-- **Foreground:** stdout/stderr via canal para o painel monitor; UI fica "presa" naquela instância até kill.
+- **Background:** `cmd.Start()` com `SysProcAttr.Setsid = true` (Linux), redireciona stdout/stderr para arquivo em `log_dir`. Persiste entry em `instances.json`. N instâncias background simultâneas suportadas.
+- **Foreground:** stdout/stderr via canal direto para o painel monitor. Apenas **uma** instância foreground por vez (limitação do canal compartilhado com o terminal); tentativa de lançar segunda foreground gera erro com sugestão de usar background. Instâncias background pré-existentes não são afetadas.
 - **Health:** `WaitHealthy` faz `GET http://localhost:<port>/health` com retry exponencial até timeout (default 30s).
 - **Boot recovery:** ao iniciar TUI, `ProcessManager` lê `instances.json`, valida cada PID via `gopsutil` (processo existe e nome contém `llama-server`), descarta zumbis, atualiza arquivo.
 
@@ -508,7 +529,7 @@ Cada slice é merge-able sozinho; ferramenta utilizável a partir do final do sl
 | `github.com/charmbracelet/huh` | Forms (input, select, confirm, validation) |
 | `github.com/charmbracelet/glamour` | Render markdown no help modal |
 | `github.com/spf13/viper` | App config (TOML) |
-| `github.com/shirou/gopsutil/v3` | Process info, validação de PIDs |
-| `github.com/fsnotify/fsnotify` | Tail incremental de logs |
+| `github.com/shirou/gopsutil/v3` | Process info, validação de PIDs, GPU stats fallback |
+| `github.com/fsnotify/fsnotify` | Tail incremental de logs (Monitor) |
 
 Std lib para HTTP (`net/http`), processos (`os/exec`, `syscall`), JSON (`encoding/json`).
