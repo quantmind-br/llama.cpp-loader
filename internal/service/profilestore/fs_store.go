@@ -158,8 +158,62 @@ func (s *FSStore) Duplicate(srcID, newID string) (domain.Profile, error) {
 	dup.Name = src.Name + " (copy)"
 	dup.Meta = domain.ProfileMeta{} // reset timestamps; Save fills them
 
+	if dup.Args != nil {
+		if port, ok := portAsInt(dup.Args["port"]); ok {
+			used := s.usedPorts()
+			dup.Args = cloneArgs(dup.Args)
+			dup.Args["port"] = float64(nextFreePort(used, port))
+		}
+	}
+
 	if err := s.Save(dup); err != nil {
 		return domain.Profile{}, err
 	}
 	return dup, nil
+}
+
+// usedPorts collects every "port" arg currently persisted in the store.
+// I/O errors degrade gracefully — caller treats the returned set as a
+// best-effort hint, not a guarantee.
+func (s *FSStore) usedPorts() map[int]struct{} {
+	used := make(map[int]struct{})
+	profiles, _, err := s.ListWithDiagnostics()
+	if err != nil {
+		return used
+	}
+	for _, p := range profiles {
+		if port, ok := portAsInt(p.Args["port"]); ok {
+			used[port] = struct{}{}
+		}
+	}
+	return used
+}
+
+// nextFreePort returns the smallest port > start not present in used.
+// Falls back to start when the entire upper range is exhausted.
+func nextFreePort(used map[int]struct{}, start int) int {
+	for p := start + 1; p < 65536; p++ {
+		if _, taken := used[p]; !taken {
+			return p
+		}
+	}
+	return start
+}
+
+func portAsInt(v any) (int, bool) {
+	switch t := v.(type) {
+	case float64:
+		return int(t), true
+	case int:
+		return t, true
+	}
+	return 0, false
+}
+
+func cloneArgs(in map[string]any) map[string]any {
+	out := make(map[string]any, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }

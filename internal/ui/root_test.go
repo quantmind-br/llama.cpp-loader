@@ -199,6 +199,150 @@ func TestRoot_HelpSwallowsTabSwitch(t *testing.T) {
 	}
 }
 
+// capturingPage is a test double that announces it owns Tab/Shift+Tab.
+type capturingPage struct {
+	captured bool
+	keys     []string
+}
+
+func (c *capturingPage) Init() tea.Cmd { return nil }
+func (c *capturingPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if k, ok := msg.(tea.KeyMsg); ok {
+		c.keys = append(c.keys, k.String())
+	}
+	return c, nil
+}
+func (c *capturingPage) View() string             { return "captured" }
+func (c *capturingPage) IsCapturingInput() bool   { return c.captured }
+
+func TestRoot_TabPassesThroughWhenPageCapturesInput(t *testing.T) {
+	cap := &capturingPage{captured: true}
+	r := NewRoot(TabProfiles).
+		WithProfilesPage(cap).
+		WithLauncherPage(pages.Placeholder{TabName: "L"}).
+		WithMonitorPage(pages.Placeholder{TabName: "Mo"}).
+		WithModelsPage(pages.Placeholder{TabName: "Md"})
+
+	updated, _ := r.Update(tea.KeyMsg{Type: tea.KeyTab})
+	rm := updated.(RootModel)
+
+	if rm.active != TabProfiles {
+		t.Errorf("active = %v, want still TabProfiles", rm.active)
+	}
+	if len(cap.keys) != 1 || cap.keys[0] != "tab" {
+		t.Errorf("page did not receive Tab; keys=%v", cap.keys)
+	}
+}
+
+func TestRoot_QSwallowedWhilePageCapturesInput(t *testing.T) {
+	cap := &capturingPage{captured: true}
+	r := NewRoot(TabProfiles).
+		WithProfilesPage(cap).
+		WithLauncherPage(pages.Placeholder{TabName: "L"}).
+		WithMonitorPage(pages.Placeholder{TabName: "Mo"}).
+		WithModelsPage(pages.Placeholder{TabName: "Md"})
+
+	_, cmd := r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	if cmd != nil {
+		t.Errorf("q produced cmd while page captures input; want nil (key forwarded)")
+	}
+	if len(cap.keys) != 1 || cap.keys[0] != "q" {
+		t.Errorf("page did not receive q; keys=%v", cap.keys)
+	}
+}
+
+func TestRoot_NumberKeySwallowedWhilePageCapturesInput(t *testing.T) {
+	cap := &capturingPage{captured: true}
+	r := NewRoot(TabProfiles).
+		WithProfilesPage(cap).
+		WithLauncherPage(pages.Placeholder{TabName: "L"}).
+		WithMonitorPage(pages.Placeholder{TabName: "Mo"}).
+		WithModelsPage(pages.Placeholder{TabName: "Md"})
+
+	updated, _ := r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'2'}})
+	rm := updated.(RootModel)
+	if rm.active != TabProfiles {
+		t.Errorf("active = %v, want still TabProfiles (page captures input)", rm.active)
+	}
+	if len(cap.keys) != 1 || cap.keys[0] != "2" {
+		t.Errorf("page did not receive '2'; keys=%v", cap.keys)
+	}
+}
+
+func TestRoot_QuestionMarkSwallowedWhilePageCapturesInput(t *testing.T) {
+	cap := &capturingPage{captured: true}
+	r := NewRoot(TabProfiles).
+		WithProfilesPage(cap).
+		WithLauncherPage(pages.Placeholder{TabName: "L"}).
+		WithMonitorPage(pages.Placeholder{TabName: "Mo"}).
+		WithModelsPage(pages.Placeholder{TabName: "Md"})
+
+	updated, _ := r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+	rm := updated.(RootModel)
+	if rm.helpOpen {
+		t.Errorf("help opened despite page capturing input")
+	}
+	if len(cap.keys) != 1 || cap.keys[0] != "?" {
+		t.Errorf("page did not receive '?'; keys=%v", cap.keys)
+	}
+}
+
+func TestRoot_CtrlCAlwaysQuitsEvenWhenCapturingInput(t *testing.T) {
+	cap := &capturingPage{captured: true}
+	r := NewRoot(TabProfiles).
+		WithProfilesPage(cap).
+		WithLauncherPage(pages.Placeholder{TabName: "L"}).
+		WithMonitorPage(pages.Placeholder{TabName: "Mo"}).
+		WithModelsPage(pages.Placeholder{TabName: "Md"})
+
+	_, cmd := r.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd == nil {
+		t.Errorf("ctrl+c must always quit; got nil cmd")
+	}
+}
+
+func TestRoot_TabSwitchesWhenPageDoesNotCapture(t *testing.T) {
+	cap := &capturingPage{captured: false}
+	r := NewRoot(TabProfiles).
+		WithProfilesPage(cap).
+		WithLauncherPage(pages.Placeholder{TabName: "L"}).
+		WithMonitorPage(pages.Placeholder{TabName: "Mo"}).
+		WithModelsPage(pages.Placeholder{TabName: "Md"})
+
+	updated, _ := r.Update(tea.KeyMsg{Type: tea.KeyTab})
+	rm := updated.(RootModel)
+
+	if rm.active != TabLauncher {
+		t.Errorf("active = %v, want TabLauncher", rm.active)
+	}
+}
+
+func TestRoot_RoutesLaunchProfileMsg(t *testing.T) {
+	dir := t.TempDir()
+	store, _ := profilestore.NewFSStore(dir)
+	r := NewRoot(TabProfiles).
+		WithLauncherPage(pages.NewLauncherPage(store, nil, nil))
+
+	updated, _ := r.Update(pages.LaunchProfileMsg{ID: "any"})
+	rm := updated.(RootModel)
+	if rm.active != TabLauncher {
+		t.Errorf("active = %v, want TabLauncher", rm.active)
+	}
+}
+
+func TestRoot_StatusBarMentionsHelp(t *testing.T) {
+	r := NewRoot(TabProfiles).
+		WithProfilesPage(pages.Placeholder{TabName: "P"}).
+		WithLauncherPage(pages.Placeholder{TabName: "L"}).
+		WithMonitorPage(pages.Placeholder{TabName: "Mo"}).
+		WithModelsPage(pages.Placeholder{TabName: "Md"})
+	r.width = 120
+	view := r.View()
+	if !strings.Contains(view, "[?] help") {
+		t.Errorf("status bar missing [?] help; view:\n%s", view)
+	}
+}
+
 type recordingMonitor struct {
 	lastSelectPID int
 }

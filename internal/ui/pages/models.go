@@ -10,11 +10,11 @@ import (
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/quantmind-br/llama-cpp-loader/internal/domain"
 	"github.com/quantmind-br/llama-cpp-loader/internal/service/modelscanner"
+	"github.com/quantmind-br/llama-cpp-loader/internal/service/profilestore"
 	"github.com/quantmind-br/llama-cpp-loader/internal/ui/theme"
 )
 
@@ -25,10 +25,33 @@ type pathStatus struct {
 	err   string
 }
 
+// actionOption is one row in the inline action selector overlays.
+type actionOption struct{ label, value string }
+
+// actionMenu is the inline modal used for "what should we do with this
+// model file?" and the follow-up "which profile do we update?".
+// Replaces the earlier huh.NewForm wrapping a single Select that did not
+// reliably reach huh.StateCompleted on a single Enter press.
+type actionMenu struct {
+	title      string
+	options    []actionOption
+	cursor     int
+	targetPath string // GGUF path the menu acts on
+	stage      actionStage
+}
+
+type actionStage int
+
+const (
+	actionStageRoot actionStage = iota
+	actionStagePickProfile
+)
+
 // ModelsPage browses GGUF files discovered by ModelScanner.
 type ModelsPage struct {
 	scanner modelscanner.Scanner
 	paths   []string
+	store   profilestore.Store
 	cancel  context.CancelFunc
 	scanID  int // epoch; bumped each rescan to discard stale events
 
@@ -42,9 +65,7 @@ type ModelsPage struct {
 	filterMode bool
 	flash      string
 
-	actionForm   *huh.Form
-	actionAnswer *string
-	actionPath   string // path of the file the action submenu targets
+	action *actionMenu
 
 	keys modelsKeyMap
 }
@@ -84,6 +105,21 @@ func NewModelsPage(scanner modelscanner.Scanner, paths []string) ModelsPage {
 		table:     t,
 		keys:      defaultModelsKeys(),
 	}
+}
+
+// WithProfileStore enables the "Use in existing profile" action by
+// giving the page access to the profile store. Without it, that option
+// is hidden from the action menu.
+func (p ModelsPage) WithProfileStore(store profilestore.Store) ModelsPage {
+	p.store = store
+	return p
+}
+
+// IsCapturingInput tells the root model when the page owns global
+// keystrokes (Tab/Shift+Tab) — true while the inline action menu is
+// open so cursor navigation does not leak into tab cycling.
+func (p ModelsPage) IsCapturingInput() bool {
+	return p.action != nil
 }
 
 // scanStartedMsg delivers the channel + cancel handle from a fresh scan
@@ -169,43 +205,107 @@ func (p ModelsPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return next, waitForScanEvent(msg.ch, msg.scanID)
 	case scanChannelClosedMsg:
 		return p, nil
-	case actionFormDoneMsg:
-		// Action form completed; consume answer.
-		path := p.actionPath
-		ans := ""
-		if p.actionAnswer != nil {
-			ans = *p.actionAnswer
-		}
-		p.actionForm = nil
-		p.actionAnswer = nil
-		p.actionPath = ""
-		switch ans {
-		case "new":
-			return p, func() tea.Msg { return UseInNewProfileMsg{Path: path} }
-		case "reveal":
-			p.flash = path
-			return p, nil
-		}
-		return p, nil
 	case tea.KeyMsg:
-		if p.actionForm != nil {
-			if msg.String() == "esc" {
-				p.actionForm = nil
-				p.actionAnswer = nil
-				p.actionPath = ""
-				return p, nil
-			}
-			updated, cmd := p.actionForm.Update(msg)
-			if f, ok := updated.(*huh.Form); ok {
-				p.actionForm = f
-			}
-			if p.actionForm != nil && p.actionForm.State == huh.StateCompleted {
-				return p.Update(actionFormDoneMsg{})
-			}
-			return p, cmd
+		if p.action != nil {
+			return p.updateActionMenu(msg)
 		}
 		return p.handleKey(msg)
 	}
+	return p, nil
+}
+
+// updateActionMenu owns the inline action selector while it is on
+// screen. Up/Down move the cursor, Enter commits the highlighted option,
+// Esc cancels.
+func (p ModelsPage) updateActionMenu(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		p.action = nil
+		return p, nil
+	case "up", "k":
+		if p.action.cursor > 0 {
+			p.action.cursor--
+		}
+		return p, nil
+	case "down", "j":
+		if p.action.cursor < len(p.action.options)-1 {
+			p.action.cursor++
+		}
+		return p, nil
+	case "enter":
+		opt := p.action.options[p.action.cursor]
+		switch p.action.stage {
+		case actionStageRoot:
+			return p.commitRootAction(opt.value, p.action.targetPath)
+		case actionStagePickProfile:
+			return p.commitProfileTarget(opt.value, p.action.targetPath)
+		}
+	}
+	return p, nil
+}
+
+// commitRootAction handles the choice from the first action menu.
+func (p ModelsPage) commitRootAction(choice, path string) (tea.Model, tea.Cmd) {
+	switch choice {
+	case "new":
+		p.action = nil
+		return p, func() tea.Msg { return UseInNewProfileMsg{Path: path} }
+	case "reveal":
+		p.flash = path
+		p.action = nil
+		return p, nil
+	case "existing":
+		if p.store == nil {
+			p.flash = "profile store not wired"
+			p.action = nil
+			return p, nil
+		}
+		profiles, err := p.store.List()
+		if err != nil {
+			p.flash = "load profiles: " + err.Error()
+			p.action = nil
+			return p, nil
+		}
+		if len(profiles) == 0 {
+			p.flash = "no existing profiles to update"
+			p.action = nil
+			return p, nil
+		}
+		opts := make([]actionOption, 0, len(profiles))
+		for _, pr := range profiles {
+			opts = append(opts, actionOption{label: pr.Name + " (" + pr.ID + ")", value: pr.ID})
+		}
+		p.action = &actionMenu{
+			title:      "Update which profile?",
+			options:    opts,
+			targetPath: path,
+			stage:      actionStagePickProfile,
+		}
+		return p, nil
+	}
+	p.action = nil
+	return p, nil
+}
+
+// commitProfileTarget applies the selected GGUF path to the chosen
+// existing profile and persists.
+func (p ModelsPage) commitProfileTarget(profileID, path string) (tea.Model, tea.Cmd) {
+	p.action = nil
+	if p.store == nil {
+		p.flash = "profile store not wired"
+		return p, nil
+	}
+	pr, err := p.store.Get(profileID)
+	if err != nil {
+		p.flash = "load profile: " + err.Error()
+		return p, nil
+	}
+	pr.Model = path
+	if err := p.store.Save(pr); err != nil {
+		p.flash = "save profile: " + err.Error()
+		return p, nil
+	}
+	p.flash = "updated " + profileID
 	return p, nil
 }
 
@@ -321,19 +421,20 @@ func (p ModelsPage) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return p, nil
 		}
 		selected := visible[idx]
-		answer := ""
-		p.actionAnswer = &answer
-		p.actionPath = selected.Path
-		p.actionForm = huh.NewForm(huh.NewGroup(
-			huh.NewSelect[string]().
-				Title("Action for "+selected.Name).
-				Options(
-					huh.NewOption("Use in new profile", "new"),
-					huh.NewOption("Reveal path", "reveal"),
-				).
-				Value(p.actionAnswer),
-		)).WithShowHelp(false).WithShowErrors(false)
-		return p, p.actionForm.Init()
+		opts := []actionOption{
+			{label: "Use in new profile", value: "new"},
+		}
+		if p.store != nil {
+			opts = append(opts, actionOption{label: "Use in existing profile", value: "existing"})
+		}
+		opts = append(opts, actionOption{label: "Reveal path", value: "reveal"})
+		p.action = &actionMenu{
+			title:      "Action for " + selected.Name,
+			options:    opts,
+			targetPath: selected.Path,
+			stage:      actionStageRoot,
+		}
+		return p, nil
 	}
 
 	if p.filterMode {
@@ -358,8 +459,8 @@ func (p ModelsPage) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (p ModelsPage) View() string {
-	if p.actionForm != nil {
-		return p.actionForm.View()
+	if p.action != nil {
+		return p.renderActionMenu()
 	}
 	header := theme.Title.Render("Models")
 	statusLine := p.renderStatus()
@@ -373,6 +474,23 @@ func (p ModelsPage) View() string {
 		footer = theme.Subtitle.Render(p.flash)
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, header, statusLine, p.table.View(), filterLine, help, footer)
+}
+
+// renderActionMenu draws the inline modal-ish overlay used for both the
+// root action menu and the follow-up profile picker.
+func (p ModelsPage) renderActionMenu() string {
+	lines := []string{theme.Title.Render(p.action.title)}
+	for i, opt := range p.action.options {
+		prefix := "  "
+		label := opt.label
+		if i == p.action.cursor {
+			prefix = "> "
+			label = theme.OK.Render(label)
+		}
+		lines = append(lines, prefix+label)
+	}
+	lines = append(lines, "", theme.Subtitle.Render("[↑/↓] move  [enter] select  [esc] cancel"))
+	return lipgloss.JoinVertical(lipgloss.Left, lines...)
 }
 
 func (p ModelsPage) renderStatus() string {
@@ -389,7 +507,7 @@ func (p ModelsPage) renderStatus() string {
 		case "scanned":
 			label = theme.OK.Render(fmt.Sprintf("%s [%d]", root, st.count))
 		case "error":
-			label = theme.Error.Render(fmt.Sprintf("%s [error: %s]", root, st.err))
+			label = theme.Error.Render(fmt.Sprintf("%s [error: %s]", root, truncate(st.err, 30)))
 		default:
 			label = theme.Subtitle.Render(root)
 		}
@@ -404,5 +522,3 @@ func (p ModelsPage) renderStatus() string {
 type UseInNewProfileMsg struct {
 	Path string
 }
-
-type actionFormDoneMsg struct{}

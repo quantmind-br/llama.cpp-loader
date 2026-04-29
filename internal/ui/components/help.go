@@ -29,7 +29,7 @@ const HelpMarkdown = `# llama-cpp-loader — Keybindings
 
 ## Monitor tab
 
-- ` + "`Tab`" + ` — cycle Logs / Slots / Metrics sub-views
+- ` + "`v`" + ` — cycle Logs / Slots / Metrics sub-views
 - ` + "`Space`" + ` — pause/resume log scroll
 - ` + "`k`" + ` — kill selected instance
 - ` + "`r`" + ` — restart selected instance (Kill + Launch)

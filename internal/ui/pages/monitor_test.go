@@ -105,7 +105,7 @@ func TestMonitorPage_TabCyclesToSlots(t *testing.T) {
 	}})
 
 	// Press Tab -> sub-view becomes Slots.
-	p, _ = updateAs[*MonitorPage](p, tea.KeyMsg{Type: tea.KeyTab})
+	p, _ = updateAs[*MonitorPage](p, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'v'}})
 
 	v := p.View()
 	if !strings.Contains(v, "idle") {
@@ -128,8 +128,8 @@ func TestMonitorPage_MetricsViewRendersSparkline(t *testing.T) {
 		},
 	}})
 	// Tab twice -> Metrics.
-	p, _ = updateAs[*MonitorPage](p, tea.KeyMsg{Type: tea.KeyTab})
-	p, _ = updateAs[*MonitorPage](p, tea.KeyMsg{Type: tea.KeyTab})
+	p, _ = updateAs[*MonitorPage](p, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'v'}})
+	p, _ = updateAs[*MonitorPage](p, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'v'}})
 
 	v := p.View()
 	if !strings.Contains(v, "tokens/s") {
@@ -154,8 +154,8 @@ func TestMonitorPage_MetricsPlaceholderWhenEmpty(t *testing.T) {
 	p := NewMonitorPage(pm, mm, nil)
 	p, _ = updateAs[*MonitorPage](p, monitorInstancesRefreshedMsg{insts: pm.List()})
 	// Switch to metrics sub-view.
-	p, _ = updateAs[*MonitorPage](p, tea.KeyMsg{Type: tea.KeyTab})
-	p, _ = updateAs[*MonitorPage](p, tea.KeyMsg{Type: tea.KeyTab})
+	p, _ = updateAs[*MonitorPage](p, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'v'}})
+	p, _ = updateAs[*MonitorPage](p, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'v'}})
 	out := p.View()
 	if !strings.Contains(out, "(no metrics yet") {
 		t.Fatalf("metrics view missing placeholder; got:\n%s", out)
@@ -517,7 +517,7 @@ func TestMonitorPage_FooterShowsHints(t *testing.T) {
 	p := NewMonitorPage(pm, mm, nil)
 	p, _ = updateAs[*MonitorPage](p, monitorInstancesRefreshedMsg{insts: pm.List()})
 	out := p.View()
-	for _, want := range []string{"[Tab]", "[k]", "[r]", "[Space]", "[?]"} {
+	for _, want := range []string{"[v]", "[k]", "[r]", "[Space]", "[?]"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("footer missing %q; got:\n%s", want, out)
 		}

@@ -169,6 +169,39 @@ func TestFSStore_Duplicate(t *testing.T) {
 	}
 }
 
+func TestFSStore_DuplicateBumpsPortWhenInUse(t *testing.T) {
+	s, _ := newStore(t)
+	if err := s.Save(sampleProfile("a", "A")); err != nil {
+		t.Fatal(err)
+	}
+	dup, err := s.Duplicate("a", "a-copy")
+	if err != nil {
+		t.Fatalf("Duplicate: %v", err)
+	}
+	got, ok := dup.Args["port"].(float64)
+	if !ok {
+		t.Fatalf("dup.Args[port] type = %T, want float64", dup.Args["port"])
+	}
+	if int(got) != 8081 {
+		t.Errorf("dup port = %d, want 8081 (bumped from 8080)", int(got))
+	}
+	// Origin profile must remain unchanged.
+	orig, _ := s.Get("a")
+	if origPort, _ := orig.Args["port"].(float64); int(origPort) != 8080 {
+		t.Errorf("orig port mutated to %d", int(origPort))
+	}
+}
+
+func TestNextFreePort_FallsBackWhenExhausted(t *testing.T) {
+	used := make(map[int]struct{})
+	for p := 65000; p < 65536; p++ {
+		used[p] = struct{}{}
+	}
+	if got := nextFreePort(used, 65500); got != 65500 {
+		t.Errorf("nextFreePort exhausted = %d, want fallback 65500", got)
+	}
+}
+
 func TestFSStore_AtomicWrite_NoLeftoverTmp(t *testing.T) {
 	s, dir := newStore(t)
 	if err := s.Save(sampleProfile("a", "A")); err != nil {

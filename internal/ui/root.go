@@ -44,6 +44,21 @@ type Page interface {
 	View() string
 }
 
+// InputCapture is the optional contract a page implements to claim
+// global keybindings (Tab/Shift+Tab) while a modal/editor/picker is
+// active. When IsCapturingInput returns true the root forwards the
+// keystroke to the page instead of cycling tabs.
+type InputCapture interface {
+	IsCapturingInput() bool
+}
+
+// Reloader is the optional contract a page implements to refresh its
+// state on demand (e.g. on tab focus, when external files may have
+// changed).
+type Reloader interface {
+	Reload() tea.Cmd
+}
+
 // bootBlocker carrega o conteúdo de um modal bloqueante exibido sobre toda a UI.
 type bootBlocker struct {
 	title string
@@ -72,7 +87,7 @@ func NewRoot(initial Tab) RootModel {
 			pages.Placeholder{TabName: TabModels.Title()},
 		},
 		active: initial,
-		status: components.StatusBar{Hints: "[1-4] tabs  [tab] next  [q] quit"},
+		status: components.StatusBar{Hints: "[1-4] tabs  [tab] next  [?] help  [q] quit"},
 	}
 }
 
@@ -159,6 +174,12 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.pages[TabMonitor] = updated
 		return m, cmd
 
+	case pages.LaunchProfileMsg:
+		m.active = TabLauncher
+		updated, cmd := m.pages[TabLauncher].Update(msg)
+		m.pages[TabLauncher] = updated
+		return m, cmd
+
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		// forward sized message to all pages so their internal state knows
@@ -182,43 +203,67 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "?", "esc":
 				m.helpOpen = false
 				return m, nil
-			case "ctrl+c", "q":
+			case "ctrl+c":
 				return m, tea.Quit
 			}
 			return m, nil // swallow everything else while help is open
 		}
-		if msg.String() == "?" {
-			m.helpOpen = true
-			return m, nil
-		}
-		switch msg.String() {
-		case "ctrl+c", "q":
+		// ctrl+c is the only unconditional global key — it must work
+		// even while an editor/huh form is active so the user can
+		// always escape. Every other shortcut (q, 1-4, tab, ?) is
+		// gated by IsCapturingInput so printable keys reach the form
+		// instead of triggering quit/tab-switch/help.
+		if msg.String() == "ctrl+c" {
 			return m, tea.Quit
-		case "1":
-			m.active = TabProfiles
-			return m, nil
-		case "2":
-			m.active = TabLauncher
-			return m, nil
-		case "3":
-			m.active = TabMonitor
-			return m, nil
-		case "4":
-			m.active = TabModels
-			return m, nil
-		case "tab":
-			m.active = (m.active + 1) % 4
-			return m, nil
-		case "shift+tab":
-			m.active = (m.active + 3) % 4
-			return m, nil
+		}
+		if !m.activePageCapturesInput() {
+			if msg.String() == "?" {
+				m.helpOpen = true
+				return m, nil
+			}
+			switch msg.String() {
+			case "q":
+				return m, tea.Quit
+			case "1":
+				return m.activate(TabProfiles)
+			case "2":
+				return m.activate(TabLauncher)
+			case "3":
+				return m.activate(TabMonitor)
+			case "4":
+				return m.activate(TabModels)
+			case "tab":
+				return m.activate((m.active + 1) % 4)
+			case "shift+tab":
+				return m.activate((m.active + 3) % 4)
+			}
 		}
 	}
 
-	// route remaining messages to the active page
-	updated, cmd := m.pages[m.active].Update(msg)
-	m.pages[m.active] = updated
-	return m, cmd
+	// Key/Mouse input goes only to the active page.
+	if _, isKey := msg.(tea.KeyMsg); isKey {
+		updated, cmd := m.pages[m.active].Update(msg)
+		m.pages[m.active] = updated
+		return m, cmd
+	}
+	if _, isMouse := msg.(tea.MouseMsg); isMouse {
+		updated, cmd := m.pages[m.active].Update(msg)
+		m.pages[m.active] = updated
+		return m, cmd
+	}
+	// Other msgs (cmd→msg returns from background pipelines like the
+	// model scanner or the monitor periodic tick) are broadcast to every
+	// page, so msgs reach the page that owns them even when it isn't
+	// active. Pages that don't recognize the type simply return p, nil.
+	var cmds []tea.Cmd
+	for i, p := range m.pages {
+		updated, cmd := p.Update(msg)
+		m.pages[i] = updated
+		if cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+	}
+	return m, tea.Batch(cmds...)
 }
 
 func (m RootModel) View() string {
@@ -236,6 +281,24 @@ func (m RootModel) View() string {
 	body := m.pages[m.active].View()
 	status := m.status.Render(m.width)
 	return lipgloss.JoinVertical(lipgloss.Left, header, body, status)
+}
+
+// activate switches to the given tab and triggers Reload on the page if
+// it implements the Reloader contract. This keeps Profiles in sync with
+// external file changes without requiring a TUI restart.
+func (m RootModel) activate(t Tab) (tea.Model, tea.Cmd) {
+	m.active = t
+	if r, ok := m.pages[t].(Reloader); ok {
+		return m, r.Reload()
+	}
+	return m, nil
+}
+
+func (m RootModel) activePageCapturesInput() bool {
+	if ic, ok := m.pages[m.active].(InputCapture); ok {
+		return ic.IsCapturingInput()
+	}
+	return false
 }
 
 func (m RootModel) renderTabs() string {

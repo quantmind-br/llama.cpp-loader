@@ -100,12 +100,15 @@ func TestModelsPage_ActionUseInNewProfileEmitsMsg(t *testing.T) {
 	page.files = []domain.ModelFile{mf}
 	page.refreshRows()
 
-	// Inject "new" answer and call the form-done handler directly.
-	answer := "new"
-	page.actionAnswer = &answer
-	page.actionPath = mf.Path
+	// Open the inline action menu programmatically and pick "new".
+	page.action = &actionMenu{
+		title:      "Action for q.gguf",
+		options:    []actionOption{{label: "Use in new profile", value: "new"}},
+		targetPath: mf.Path,
+		stage:      actionStageRoot,
+	}
 
-	updated, cmd := page.Update(actionFormDoneMsg{})
+	updated, cmd := page.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	_ = updated
 	if cmd == nil {
 		t.Fatal("expected UseInNewProfileMsg cmd, got nil")

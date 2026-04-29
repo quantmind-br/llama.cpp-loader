@@ -80,6 +80,13 @@ type LauncherProfilesLoadedMsg struct {
 	Err      error
 }
 
+// LaunchProfileMsg requests the Launcher to start the profile identified
+// by ID. Emitted by ProfilesPage when the user presses [L]; routed by the
+// root model after switching to the Launcher tab.
+type LaunchProfileMsg struct {
+	ID string
+}
+
 // launchedMsg is emitted after a successful Launch + WaitHealthy.
 type launchedMsg struct {
 	inst domain.RunningInstance
@@ -155,6 +162,32 @@ func (p LauncherPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		p.status = friendlyLaunchError(msg.err)
 		return p, nil
 
+	case LaunchProfileMsg:
+		if p.manager == nil {
+			p.status = "launch failed: process manager unavailable"
+			return p, nil
+		}
+		selected, err := p.store.Get(msg.ID)
+		if err != nil {
+			p.status = "launch failed: " + err.Error()
+			return p, nil
+		}
+		// Refresh the in-memory list so the user sees the profile they
+		// just launched ranked correctly. Best effort — failure here
+		// only affects display, not the launch itself.
+		if got, lerr := p.store.List(); lerr == nil {
+			p.profiles = got
+			items := make([]list.Item, len(got))
+			for i, pr := range got {
+				items[i] = profileItem{p: pr}
+				if pr.ID == msg.ID {
+					p.plist.Select(i)
+				}
+			}
+			p.plist.SetItems(items)
+		}
+		return p, p.launchProfileCmd(selected)
+
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "b":
@@ -185,33 +218,39 @@ func (p LauncherPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if !ok || p.manager == nil {
 				return p, nil
 			}
-			selected := it.p
-			val := p.validator
-			schema := p.schema
-			mgr := p.manager
-			mode := processmgr.LaunchBackground
-			if !p.background {
-				mode = processmgr.LaunchForeground
-			}
-			return p, func() tea.Msg {
-				if val != nil {
-					rep := val.Validate(selected, schema)
-					if rep.HasBlockingErrors() {
-						return launchErrMsg{err: fmt.Errorf("validation failed: %d errors", len(rep.Errors))}
-					}
-				}
-				inst, err := mgr.Launch(selected, mode)
-				if err != nil {
-					return launchErrMsg{err: err}
-				}
-				return launchedMsg{inst: inst}
-			}
+			return p, p.launchProfileCmd(it.p)
 		}
 	}
 
 	updatedList, cmd := p.plist.Update(msg)
 	p.plist = updatedList
 	return p, cmd
+}
+
+// launchProfileCmd validates the profile and starts the llama-server
+// process. Shared by the [enter] keybinding and the LaunchProfileMsg path
+// triggered from the Profiles tab via [L].
+func (p LauncherPage) launchProfileCmd(selected domain.Profile) tea.Cmd {
+	val := p.validator
+	schema := p.schema
+	mgr := p.manager
+	mode := processmgr.LaunchBackground
+	if !p.background {
+		mode = processmgr.LaunchForeground
+	}
+	return func() tea.Msg {
+		if val != nil {
+			rep := val.Validate(selected, schema)
+			if rep.HasBlockingErrors() {
+				return launchErrMsg{err: fmt.Errorf("validation failed: %d errors", len(rep.Errors))}
+			}
+		}
+		inst, err := mgr.Launch(selected, mode)
+		if err != nil {
+			return launchErrMsg{err: err}
+		}
+		return launchedMsg{inst: inst}
+	}
 }
 
 func (p LauncherPage) View() string {

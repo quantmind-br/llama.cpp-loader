@@ -24,7 +24,7 @@ func TestBuildArgs_ModelFirstAndSortedFlags(t *testing.T) {
 		"--cache-type-k", "q8_0",
 		"--ctx-size", "16384",
 		"--flash-attn",
-		"--ngl", "99",
+		"--n-gpu-layers", "99",
 		"--no-warmup",
 	}
 	if !reflect.DeepEqual(got, want) {

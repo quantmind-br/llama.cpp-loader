@@ -179,7 +179,7 @@ func (p *MonitorPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		p.SetSize(m.Width, m.Height)
 	case tea.KeyMsg:
 		switch {
-		case m.Type == tea.KeyTab:
+		case m.Type == tea.KeyRunes && len(m.Runes) == 1 && m.Runes[0] == 'v':
 			p.subView = (p.subView + 1) % 3
 		case m.Type == tea.KeyRunes && len(m.Runes) == 1 && m.Runes[0] == 'k':
 			if pid := p.selectedPID(); pid > 0 {
@@ -269,6 +269,15 @@ func (p *MonitorPage) applyInstances(insts []domain.RunningInstance) tea.Cmd {
 		})
 	}
 	p.tbl.SetRows(rows)
+	// Bubbles' table doesn't auto-clamp the cursor when rows shrink, so
+	// SelectedRow can later return an empty Row and panic on row[0].
+	if cur := p.tbl.Cursor(); cur >= len(rows) {
+		if len(rows) == 0 {
+			p.tbl.SetCursor(0)
+		} else {
+			p.tbl.SetCursor(len(rows) - 1)
+		}
+	}
 
 	// Add subs for new (non-crashed) instances; collect listenCmds.
 	var cmds []tea.Cmd
@@ -314,7 +323,7 @@ func (p *MonitorPage) applyInstances(insts []domain.RunningInstance) tea.Cmd {
 
 func (p *MonitorPage) View() string {
 	footer := theme.Subtitle.Render(
-		"[Tab] cycle view  [Space] pause  [k] kill  [r] restart  [?] help",
+		"[v] cycle view  [Space] pause  [k] kill  [r] restart  [?] help",
 	)
 	header := lipgloss.NewStyle().Bold(true).Render("Running instances")
 	if len(p.tbl.Rows()) == 0 {
@@ -377,11 +386,17 @@ func (p *MonitorPage) selectRow(pid int) {
 }
 
 // selectedPID returns the PID of the currently selected row, or 0 if no rows.
+// Guarded against `table.Model.SelectedRow()` returning an empty Row when the
+// cursor is out of range (e.g. rows shrunk after a row was killed) — without
+// the length check, row[0] panics with index out of range.
 func (p *MonitorPage) selectedPID() int {
 	if len(p.tbl.Rows()) == 0 {
 		return 0
 	}
 	row := p.tbl.SelectedRow()
+	if len(row) == 0 {
+		return 0
+	}
 	pidCol := strings.TrimPrefix(row[0], "✗ ")
 	var pid int
 	_, _ = fmt.Sscanf(pidCol, "%d", &pid)

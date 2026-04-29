@@ -68,7 +68,7 @@ func main() {
 
 	profilesPage := pages.NewProfilesPage(store, schema).
 		WithModelScanner(scanner, cfg.Models.SearchPaths)
-	modelsPage := pages.NewModelsPage(scanner, cfg.Models.SearchPaths)
+	modelsPage := pages.NewModelsPage(scanner, cfg.Models.SearchPaths).WithProfileStore(store)
 	launcherPage := pages.NewLauncherPage(store, mgr, val).SetSchema(schema)
 
 	mon := monitor.New(monitor.Config{NvidiaSMIPath: "nvidia-smi"})

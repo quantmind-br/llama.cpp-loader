@@ -10,6 +10,24 @@ import (
 	"github.com/quantmind-br/llama-cpp-loader/internal/domain"
 )
 
+// shortToLong maps user-friendly short-form flag keys stored in Profile.Args
+// to the canonical long-form llama-server accepts as `--<long>`. The UI
+// editor stores keys like "ngl" / "ctx-size" because they read better; but
+// llama-server only accepts the short form via the single-dash variant
+// (`-ngl`), not `--ngl`. Translating here keeps existing profiles on disk
+// working without a migration.
+var shortToLong = map[string]string{
+	"ngl": "n-gpu-layers",
+}
+
+// canonicalFlag returns the long-form name for a Profile.Args key.
+func canonicalFlag(key string) string {
+	if long, ok := shortToLong[key]; ok {
+		return long
+	}
+	return key
+}
+
 // BuildArgs converts a Profile into the CLI args slice used to spawn
 // llama-server. The argument order is deterministic: --model first, then
 // flags from p.Args sorted by key, then p.ExtraArgs verbatim.
@@ -31,21 +49,22 @@ func BuildArgs(p domain.Profile) []string {
 	sort.Strings(keys)
 
 	for _, k := range keys {
+		flag := "--" + canonicalFlag(k)
 		switch v := p.Args[k].(type) {
 		case bool:
 			if v {
-				args = append(args, "--"+k)
+				args = append(args, flag)
 			}
 		case string:
-			args = append(args, "--"+k, v)
+			args = append(args, flag, v)
 		case float64:
-			args = append(args, "--"+k, formatFloat(v))
+			args = append(args, flag, formatFloat(v))
 		case []any:
 			parts := make([]string, len(v))
 			for i, x := range v {
 				parts[i] = fmt.Sprint(x)
 			}
-			args = append(args, "--"+k, strings.Join(parts, ","))
+			args = append(args, flag, strings.Join(parts, ","))
 		}
 	}
 	args = append(args, p.ExtraArgs...)

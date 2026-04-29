@@ -32,10 +32,14 @@ type ProfilesPage struct {
 	height   int
 
 	// Detail/edit state.
-	editing       bool
-	subTab        subTab
-	form          *huh.Form
-	draft         profileDraft
+	editing bool
+	subTab  subTab
+	form    *huh.Form
+	// draft is a heap pointer so &draft.Field bindings inside the huh form
+	// stay valid across the value-receiver copies of ProfilesPage that
+	// bubbletea makes on every Update. A value field would escape to a
+	// different address each copy and the form would write to a stale draft.
+	draft         *profileDraft
 	confirmDelete bool
 	confirmForm   *huh.Form
 	confirmAnswer *bool // heap-allocated so address remains valid across Update copies
@@ -57,7 +61,7 @@ type ProfilesPage struct {
 }
 
 type profilesKeyMap struct {
-	New, Save, Duplicate, Delete, Edit, Cancel, Tab key.Binding
+	New, Save, Duplicate, Delete, Edit, Cancel, Tab, Launch key.Binding
 }
 
 func defaultProfilesKeys() profilesKeyMap {
@@ -69,6 +73,7 @@ func defaultProfilesKeys() profilesKeyMap {
 		Edit:      key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "edit")),
 		Cancel:    key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "cancel")),
 		Tab:       key.NewBinding(key.WithKeys("ctrl+t"), key.WithHelp("ctrl+t", "tab editor")),
+		Launch:    key.NewBinding(key.WithKeys("L"), key.WithHelp("L", "launch")),
 	}
 }
 
@@ -169,7 +174,7 @@ func (p ProfilesPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case UseInNewProfileMsg:
 		// Open a new draft pre-filled with the selected model path.
-		p.draft = profileDraft{
+		p.draft = &profileDraft{
 			ID:         "",
 			Name:       "New Profile",
 			Model:      msg.Path,
@@ -183,20 +188,22 @@ func (p ProfilesPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			CacheTypeV: "q8_0",
 			isNew:      true,
 		}
-		p.form = buildEditorForm(&p.draft, p.schema)
+		p.form = buildEditorForm(p.draft, p.schema)
 		p.editing = true
 		p.flash = "new profile prefilled with picked model"
 		return p, p.form.Init()
 
 	case components.ModelPickedMsg:
-		p.draft.Model = msg.Path
+		if p.draft != nil {
+			p.draft.Model = msg.Path
+		}
 		p.pickerActive = false
 		if c := p.picker.Cancel(); c != nil {
 			c()
 		}
 		// Rebuild form so the new Model value is shown if user is on
 		// essentials sub-tab.
-		p.form = buildEditorForm(&p.draft, p.schema)
+		p.form = buildEditorForm(p.draft, p.schema)
 		return p, p.form.Init()
 
 	case components.ModelPickerCancelledMsg:
@@ -211,6 +218,25 @@ func (p ProfilesPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return p.updateConfirm(msg)
 		}
 		return p.updateList(msg)
+	}
+
+	// Forward non-key messages to the active huh form / confirm dialog
+	// so their internal Cmd→Msg loops (focus changes, async validation,
+	// etc.) actually land. Without this the form never finishes its
+	// Init() handshake and Tab/Down/Enter never advance fields.
+	if p.editing && p.form != nil {
+		updated, cmd := p.form.Update(msg)
+		if f, ok := updated.(*huh.Form); ok {
+			p.form = f
+		}
+		return p, cmd
+	}
+	if p.confirmDelete && p.confirmForm != nil {
+		updated, cmd := p.confirmForm.Update(msg)
+		if f, ok := updated.(*huh.Form); ok {
+			p.confirmForm = f
+		}
+		return p, cmd
 	}
 
 	return p, nil
@@ -273,7 +299,7 @@ func (p ProfilesPage) detailView() string {
 		pr.ID,
 		pr.Model,
 		pr.Args["ngl"], pr.Args["ctx-size"], pr.Args["port"], pr.Args["flash-attn"],
-		theme.Subtitle.Render("[enter] edit  [n] new  [d] dup  [x] del  [?] help"),
+		theme.Subtitle.Render("[enter] edit  [n] new  [d] dup  [x] del  [L] launch  [?] help"),
 	)
 }
 
@@ -287,11 +313,41 @@ func (p ProfilesPage) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return p.duplicateSelected()
 	case key.Matches(msg, p.listKeys.Delete):
 		return p.askDeleteSelected()
+	case key.Matches(msg, p.listKeys.Launch):
+		return p.launchSelected()
 	}
 
 	updated, cmd := p.list.Update(msg)
 	p.list = updated
 	return p, cmd
+}
+
+// launchSelected emits a LaunchProfileMsg for the currently selected
+// profile so the root model can switch to the Launcher tab and run it.
+func (p ProfilesPage) launchSelected() (tea.Model, tea.Cmd) {
+	if _, isCorrupt := p.list.SelectedItem().(corruptItem); isCorrupt {
+		p.flash = "corrupt entry — fix the JSON file or delete it"
+		return p, nil
+	}
+	sel, ok := p.list.SelectedItem().(item)
+	if !ok {
+		return p, nil
+	}
+	id := sel.p.ID
+	return p, func() tea.Msg { return LaunchProfileMsg{ID: id} }
+}
+
+// IsCapturingInput tells the root model when the page owns Tab/Shift+Tab.
+// True whenever an editor, picker overlay, or delete confirmation is on
+// screen — these states need Tab to navigate huh forms.
+func (p ProfilesPage) IsCapturingInput() bool {
+	return p.editing || p.pickerActive || p.confirmDelete
+}
+
+// Reload triggers a fresh load from the underlying store. Called by the
+// root when the user navigates back to the Profiles tab.
+func (p ProfilesPage) Reload() tea.Cmd {
+	return p.loadCmd()
 }
 
 func (p ProfilesPage) updatePicker(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -357,6 +413,9 @@ func (p ProfilesPage) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (p ProfilesPage) commitDraft() (tea.Model, tea.Cmd) {
+	if p.draft == nil {
+		return p, nil
+	}
 	d := p.draft
 	if d.ID == "" {
 		d.ID = domain.Slugify(d.Name)
@@ -414,6 +473,9 @@ func (p ProfilesPage) commitDraft() (tea.Model, tea.Cmd) {
 // previewProfile builds a Profile from the current draft (without saving) for
 // the validator. Mirrors commitDraft's mapping but is allocation-only.
 func (p ProfilesPage) previewProfile() domain.Profile {
+	if p.draft == nil {
+		return domain.Profile{}
+	}
 	d := p.draft
 	args := map[string]any{}
 	if d.FlashAttn != "" {
@@ -441,7 +503,7 @@ func (p ProfilesPage) previewProfile() domain.Profile {
 		args["cache-type-v"] = d.CacheTypeV
 	}
 	return domain.Profile{
-		ID:    p.draft.ID,
+		ID:    d.ID,
 		Model: d.Model,
 		Args:  args,
 	}
@@ -461,7 +523,10 @@ func (p ProfilesPage) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	if p.confirmForm != nil && p.confirmForm.State == huh.StateCompleted {
-		id := p.draft.ID
+		var id string
+		if p.draft != nil {
+			id = p.draft.ID
+		}
 		affirmative := p.confirmAnswer != nil && *p.confirmAnswer
 		p.confirmDelete = false
 		p.confirmForm = nil
@@ -481,7 +546,7 @@ func (p ProfilesPage) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (p ProfilesPage) startNew() (tea.Model, tea.Cmd) {
-	p.draft = profileDraft{
+	p.draft = &profileDraft{
 		ID:         "",
 		Name:       "New Profile",
 		NGL:        "99",
@@ -494,7 +559,7 @@ func (p ProfilesPage) startNew() (tea.Model, tea.Cmd) {
 		CacheTypeV: "q8_0",
 		isNew:      true,
 	}
-	p.form = buildEditorForm(&p.draft, p.schema)
+	p.form = buildEditorForm(p.draft, p.schema)
 	p.editing = true
 	return p, p.form.Init()
 }
@@ -509,7 +574,7 @@ func (p ProfilesPage) startEditSelected() (tea.Model, tea.Cmd) {
 		return p, nil
 	}
 	pr := sel.p
-	p.draft = profileDraft{
+	p.draft = &profileDraft{
 		ID:          pr.ID,
 		Name:        pr.Name,
 		Description: pr.Description,
@@ -523,7 +588,7 @@ func (p ProfilesPage) startEditSelected() (tea.Model, tea.Cmd) {
 		CacheTypeK:  argString(pr.Args["cache-type-k"]),
 		CacheTypeV:  argString(pr.Args["cache-type-v"]),
 	}
-	p.form = buildEditorForm(&p.draft, p.schema)
+	p.form = buildEditorForm(p.draft, p.schema)
 	p.editing = true
 	return p, p.form.Init()
 }
@@ -569,6 +634,6 @@ func (p ProfilesPage) askDeleteSelected() (tea.Model, tea.Cmd) {
 	p.confirmForm = form
 	p.confirmDelete = true
 	// Stash the id so updateConfirm can act on submit.
-	p.draft = profileDraft{ID: id} // reuse draft.ID just to carry the id
+	p.draft = &profileDraft{ID: id} // reuse draft.ID just to carry the id
 	return p, form.Init()
 }

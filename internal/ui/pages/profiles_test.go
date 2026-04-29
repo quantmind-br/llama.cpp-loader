@@ -83,7 +83,7 @@ func TestProfilesPage_ValidationDetectsUbatchOverBatch(t *testing.T) {
 	}
 
 	page := NewProfilesPage(store, domain.FlagSchema{})
-	page.draft = profileDraft{
+	page.draft = &profileDraft{
 		ID:         "x",
 		Name:       "X",
 		BatchSize:  "2048",
@@ -205,6 +205,78 @@ func TestProfilesPage_UseInNewProfilePrefillsDraft(t *testing.T) {
 	}
 	if !page.draft.isNew {
 		t.Errorf("isNew = false, want true")
+	}
+}
+
+func TestProfilesPage_LKeyEmitsLaunchProfileMsg(t *testing.T) {
+	dir := t.TempDir()
+	store, err := profilestore.NewFSStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(domain.Profile{
+		ID:    "demo",
+		Name:  "Demo",
+		Model: "/m.gguf",
+		Args:  map[string]any{"port": float64(8080)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	page := NewProfilesPage(store, domain.FlagSchema{})
+	updated, _ := page.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	page = updated.(ProfilesPage)
+	updated, _ = page.Update(loadedMsg{profiles: []domain.Profile{{ID: "demo", Name: "Demo"}}})
+	page = updated.(ProfilesPage)
+
+	updated, cmd := page.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'L'}})
+	_ = updated
+	if cmd == nil {
+		t.Fatal("expected LaunchProfileMsg cmd, got nil")
+	}
+	got := cmd()
+	lp, ok := got.(LaunchProfileMsg)
+	if !ok {
+		t.Fatalf("msg type = %T, want LaunchProfileMsg", got)
+	}
+	if lp.ID != "demo" {
+		t.Errorf("ID = %q, want demo", lp.ID)
+	}
+}
+
+func TestProfilesPage_DetailHintIncludesLaunch(t *testing.T) {
+	dir := t.TempDir()
+	store, _ := profilestore.NewFSStore(dir)
+	page := NewProfilesPage(store, domain.FlagSchema{})
+	updated, _ := page.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	page = updated.(ProfilesPage)
+	updated, _ = page.Update(loadedMsg{profiles: []domain.Profile{{ID: "demo", Name: "Demo", Args: map[string]any{"port": float64(8080)}}}})
+	page = updated.(ProfilesPage)
+	if !strings.Contains(page.View(), "[L] launch") {
+		t.Errorf("detail hint missing [L] launch; got:\n%s", page.View())
+	}
+}
+
+func TestProfilesPage_IsCapturingInputDuringEditAndPicker(t *testing.T) {
+	dir := t.TempDir()
+	store, _ := profilestore.NewFSStore(dir)
+	page := NewProfilesPage(store, domain.FlagSchema{})
+
+	if page.IsCapturingInput() {
+		t.Errorf("idle page captures input")
+	}
+	page.editing = true
+	if !page.IsCapturingInput() {
+		t.Errorf("editing page should capture input")
+	}
+	page.editing = false
+	page.pickerActive = true
+	if !page.IsCapturingInput() {
+		t.Errorf("picker page should capture input")
+	}
+	page.pickerActive = false
+	page.confirmDelete = true
+	if !page.IsCapturingInput() {
+		t.Errorf("confirmDelete page should capture input")
 	}
 }
 
