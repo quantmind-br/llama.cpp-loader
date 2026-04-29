@@ -14,6 +14,7 @@ import (
 	"github.com/quantmind-br/llama-cpp-loader/internal/domain"
 	"github.com/quantmind-br/llama-cpp-loader/internal/service/llamahelp"
 	"github.com/quantmind-br/llama-cpp-loader/internal/service/modelscanner"
+	"github.com/quantmind-br/llama-cpp-loader/internal/service/monitor"
 	"github.com/quantmind-br/llama-cpp-loader/internal/service/processmgr"
 	"github.com/quantmind-br/llama-cpp-loader/internal/service/profilestore"
 	"github.com/quantmind-br/llama-cpp-loader/internal/service/validator"
@@ -53,10 +54,14 @@ func main() {
 	modelsPage := pages.NewModelsPage(scanner, cfg.Models.SearchPaths)
 	launcherPage := pages.NewLauncherPage(store, mgr, val).SetSchema(schema)
 
+	mon := monitor.New(monitor.Config{NvidiaSMIPath: "nvidia-smi"})
+	monitorPage := pages.NewMonitorPage(mgr, mon)
+
 	root := ui.NewRoot(parseTab(cfg.UI.DefaultTab)).
 		WithProfilesPage(profilesPage).
 		WithModelsPage(modelsPage).
-		WithLauncherPage(launcherPage)
+		WithLauncherPage(launcherPage).
+		WithMonitorPage(monitorPage)
 	if schemaWarn != "" {
 		root = root.WithStatusWarn(schemaWarn)
 	}

@@ -89,3 +89,28 @@ func TestRoot_TabSwitchToLauncherShowsPage(t *testing.T) {
 	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
 	_ = tm.Quit()
 }
+
+func TestRoot_WithMonitorPageReplacesPlaceholder(t *testing.T) {
+	root := NewRoot(TabMonitor).WithMonitorPage(pages.Placeholder{TabName: "MONITOR_REPLACED"})
+
+	tm := teatest.NewTestModel(t, root, teatest.WithInitialTermSize(120, 30))
+	tm.Send(tea.WindowSizeMsg{Width: 120, Height: 30})
+
+	teatest.WaitFor(t, tm.Output(), func(out []byte) bool {
+		return strings.Contains(string(out), "MONITOR_REPLACED")
+	}, teatest.WithDuration(2*time.Second))
+
+	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	_ = tm.Quit()
+}
+
+func TestRoot_RoutesSwitchToMonitorMsg(t *testing.T) {
+	root := NewRoot(TabProfiles).WithMonitorPage(pages.Placeholder{TabName: "MONITOR"})
+
+	updated, _ := root.Update(pages.SwitchToMonitorMsg{PID: 999})
+	r := updated.(RootModel)
+
+	if r.active != TabMonitor {
+		t.Fatalf("active = %d, want TabMonitor=%d", r.active, TabMonitor)
+	}
+}

@@ -87,6 +87,12 @@ func (m RootModel) WithLauncherPage(p tea.Model) RootModel {
 	return m
 }
 
+// WithMonitorPage replaces the placeholder Monitor tab with a real model.
+func (m RootModel) WithMonitorPage(p tea.Model) RootModel {
+	m.pages[TabMonitor] = p
+	return m
+}
+
 // WithStatusWarn sets a warning message on the status bar (used at boot to
 // surface schema fallback notices).
 func (m RootModel) WithStatusWarn(msg string) RootModel {
@@ -118,6 +124,10 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		updated, cmd := m.pages[TabProfiles].Update(msg)
 		m.pages[TabProfiles] = updated
 		return m, cmd
+
+	case pages.SwitchToMonitorMsg:
+		m.active = TabMonitor
+		return m, nil
 
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
