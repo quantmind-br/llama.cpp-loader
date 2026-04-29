@@ -367,7 +367,7 @@ func (p ModelsPage) View() string {
 	if p.filterMode || p.filter != "" {
 		filterLine = theme.Subtitle.Render(fmt.Sprintf("filter: %q", p.filter))
 	}
-	help := theme.Subtitle.Render("[/] filter  [R] rescan  [enter] actions  [esc] clear")
+	help := theme.Subtitle.Render("[/] filter  [R] rescan  [enter] actions  [esc] clear  [?] help")
 	footer := ""
 	if p.flash != "" {
 		footer = theme.Subtitle.Render(p.flash)

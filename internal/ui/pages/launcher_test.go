@@ -61,7 +61,7 @@ func (f *fakeManager) Kill(pid int) error                          { return nil 
 func (f *fakeManager) List() []domain.RunningInstance              { return nil }
 func (f *fakeManager) WaitHealthy(_, _ int, _ time.Duration) error { return nil }
 func (f *fakeManager) TailLogs(_ int) (io.ReadCloser, error)       { return nil, processmgr.ErrUnknownPID }
-func (f *fakeManager) Close() error                                 { return nil }
+func (f *fakeManager) Close() error                                { return nil }
 
 func TestLauncherPage_EnterLaunchesSelected(t *testing.T) {
 	dir := t.TempDir()
@@ -249,4 +249,11 @@ func TestLauncherPage_HealthyEmitsSwitchToMonitor(t *testing.T) {
 		t.Fatalf("SwitchToMonitorMsg.PID = %d, want 4242", sw.PID)
 	}
 	_ = model
+}
+
+func TestLauncherPage_FooterMentionsHelp(t *testing.T) {
+	page := NewLauncherPage(nil, nil, nil)
+	if !strings.Contains(page.View(), "[?] help") {
+		t.Errorf("launcher footer missing [?] help; got:\n%s", page.View())
+	}
 }

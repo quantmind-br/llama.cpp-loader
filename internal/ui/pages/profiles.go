@@ -26,10 +26,10 @@ type ProfilesPage struct {
 	schema    domain.FlagSchema
 	validator validator.Validator
 
-	list      list.Model
-	listKeys  profilesKeyMap
-	width     int
-	height    int
+	list     list.Model
+	listKeys profilesKeyMap
+	width    int
+	height   int
 
 	// Detail/edit state.
 	editing       bool
@@ -273,7 +273,7 @@ func (p ProfilesPage) detailView() string {
 		pr.ID,
 		pr.Model,
 		pr.Args["ngl"], pr.Args["ctx-size"], pr.Args["port"], pr.Args["flash-attn"],
-		theme.Subtitle.Render("[enter] edit  [n] new  [d] dup  [x] del"),
+		theme.Subtitle.Render("[enter] edit  [n] new  [d] dup  [x] del  [?] help"),
 	)
 }
 

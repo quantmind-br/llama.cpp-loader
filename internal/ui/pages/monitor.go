@@ -312,9 +312,12 @@ func (p *MonitorPage) applyInstances(insts []domain.RunningInstance) tea.Cmd {
 }
 
 func (p *MonitorPage) View() string {
+	footer := lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render(
+		"[Tab] cycle view  [Space] pause  [k] kill  [r] restart  [?] help",
+	)
 	header := lipgloss.NewStyle().Bold(true).Render("Running instances")
 	if len(p.tbl.Rows()) == 0 {
-		return header + "\n  (none)"
+		return header + "\n  (none)\n\n" + footer
 	}
 	top := header + "\n" + p.tbl.View()
 	pid := p.selectedPID()
@@ -355,7 +358,7 @@ func (p *MonitorPage) View() string {
 			bottom = b.String()
 		}
 	}
-	return top + "\n\n" + bottom
+	return top + "\n\n" + bottom + "\n\n" + footer
 }
 
 // selectRow positions the table cursor on the row matching pid (no-op if not found).

@@ -510,3 +510,16 @@ func TestMonitorPage_CancelOrphanIsAsync(t *testing.T) {
 		t.Fatalf("cancel never completed after release; finished=%d", atomic.LoadInt32(&cancelFinished))
 	}
 }
+
+func TestMonitorPage_FooterShowsHints(t *testing.T) {
+	pm := &fakeProcMgr{insts: []domain.RunningInstance{{PID: 1, Port: 8080, LogPath: "/tmp/x.log"}}}
+	mm := &fakeMonMgr{}
+	p := NewMonitorPage(pm, mm, nil)
+	p, _ = updateAs[*MonitorPage](p, monitorInstancesRefreshedMsg{insts: pm.List()})
+	out := p.View()
+	for _, want := range []string{"[Tab]", "[k]", "[r]", "[Space]", "[?]"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("footer missing %q; got:\n%s", want, out)
+		}
+	}
+}

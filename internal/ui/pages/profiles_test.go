@@ -180,9 +180,11 @@ func (f *fakeStoreWithDiag) Get(id string) (domain.Profile, error) {
 	}
 	return domain.Profile{}, profilestore.ErrNotFound
 }
-func (f *fakeStoreWithDiag) Save(_ domain.Profile) error                   { return nil }
-func (f *fakeStoreWithDiag) Delete(_ string) error                         { return nil }
-func (f *fakeStoreWithDiag) Duplicate(_, _ string) (domain.Profile, error) { return domain.Profile{}, nil }
+func (f *fakeStoreWithDiag) Save(_ domain.Profile) error { return nil }
+func (f *fakeStoreWithDiag) Delete(_ string) error       { return nil }
+func (f *fakeStoreWithDiag) Duplicate(_, _ string) (domain.Profile, error) {
+	return domain.Profile{}, nil
+}
 
 func TestProfilesPage_UseInNewProfilePrefillsDraft(t *testing.T) {
 	dir := t.TempDir()
@@ -203,5 +205,32 @@ func TestProfilesPage_UseInNewProfilePrefillsDraft(t *testing.T) {
 	}
 	if !page.draft.isNew {
 		t.Errorf("isNew = false, want true")
+	}
+}
+
+func TestProfilesPage_FooterMentionsHelp(t *testing.T) {
+	dir := t.TempDir()
+	store, err := profilestore.NewFSStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(domain.Profile{
+		ID:    "demo",
+		Name:  "Demo",
+		Model: "/m.gguf",
+		Args:  map[string]any{"port": float64(8080)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	page := NewProfilesPage(store, domain.FlagSchema{})
+	updated, _ := page.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	page = updated.(ProfilesPage)
+	updated, _ = page.Update(loadedMsg{profiles: []domain.Profile{{
+		ID: "demo", Name: "Demo", Model: "/m.gguf",
+		Args: map[string]any{"port": float64(8080)},
+	}}})
+	page = updated.(ProfilesPage)
+	if !strings.Contains(page.View(), "[?] help") {
+		t.Errorf("profiles footer missing [?] help; got:\n%s", page.View())
 	}
 }
