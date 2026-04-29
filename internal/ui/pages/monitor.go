@@ -115,10 +115,12 @@ type monitorInstancesRefreshedMsg struct {
 	insts []domain.RunningInstance
 }
 
-// restartCmd kills the instance with pid and relaunches the same profile in
-// background mode. Falls back to plain kill when ps is nil (no store wired).
-// On any error, the command emits a no-op msg; UI surfaces the error via the
-// next instance refresh.
+// restartCmd kills the instance with pid and relaunches the same profile,
+// mirroring the prior Background flag (so a foreground inst stays foreground
+// and a background inst stays background). Falls back to plain refresh when
+// ps is nil (no store wired) or when ps.Get returns an error. On any error,
+// the command emits a no-op msg; UI surfaces the error via the next
+// instance refresh.
 func (p *MonitorPage) restartCmd(pid int) tea.Cmd {
 	insts := p.pm.List()
 	var inst *domain.RunningInstance

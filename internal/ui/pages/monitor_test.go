@@ -1,6 +1,7 @@
 package pages
 
 import (
+	"errors"
 	"io"
 	"strings"
 	"sync/atomic"
@@ -341,6 +342,76 @@ func TestMonitorPage_RTriggersRestart(t *testing.T) {
 	}
 	if pm.launchMode != processmgr.LaunchBackground {
 		t.Errorf("launchMode = %v, want LaunchBackground", pm.launchMode)
+	}
+}
+
+func TestMonitorPage_RTriggersRestartForeground(t *testing.T) {
+	prof := domain.Profile{ID: "qwen", Name: "Qwen", Model: "/tmp/x.gguf", Args: map[string]any{"port": 8080.0}}
+	psk := &fakeProfileStore{p: prof}
+	pm := &restartTrackingMgr{
+		// Background: false (zero-value) → restartCmd should pick LaunchForeground.
+		insts:   []domain.RunningInstance{{ProfileID: "qwen", PID: 100, Port: 8080, LogPath: "/tmp/a.log"}},
+		newPID:  200,
+		newPort: 8080,
+	}
+	mm := &fakeMonMgr{}
+	p := NewMonitorPage(pm, mm, psk)
+	p, _ = updateAs[*MonitorPage](p, monitorInstancesRefreshedMsg{insts: pm.List()})
+
+	_, cmd := p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	if cmd == nil {
+		t.Fatal("r did not produce a Cmd")
+	}
+	_ = cmd()
+	if pm.launchMode != processmgr.LaunchForeground {
+		t.Errorf("launchMode = %v, want LaunchForeground", pm.launchMode)
+	}
+}
+
+func TestMonitorPage_RFallsBackToKillOnlyWhenStoreNil(t *testing.T) {
+	pm := &restartTrackingMgr{
+		insts:   []domain.RunningInstance{{ProfileID: "qwen", PID: 100, Port: 8080, LogPath: "/tmp/a.log", Background: true}},
+		newPID:  200,
+		newPort: 8080,
+	}
+	mm := &fakeMonMgr{}
+	p := NewMonitorPage(pm, mm, nil) // store nil
+	p, _ = updateAs[*MonitorPage](p, monitorInstancesRefreshedMsg{insts: pm.List()})
+
+	_, cmd := p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	if cmd == nil {
+		t.Fatal("r did not produce a Cmd")
+	}
+	_ = cmd()
+	if pm.killedPID != 100 {
+		t.Errorf("killedPID = %d, want 100", pm.killedPID)
+	}
+	if pm.launchedID != "" {
+		t.Errorf("launchedID = %q, want empty (no Launch should run with nil store)", pm.launchedID)
+	}
+}
+
+func TestMonitorPage_RFallsBackWhenProfileGetErrors(t *testing.T) {
+	psk := &fakeProfileStore{err: errors.New("profile vanished")}
+	pm := &restartTrackingMgr{
+		insts:   []domain.RunningInstance{{ProfileID: "qwen", PID: 100, Port: 8080, LogPath: "/tmp/a.log", Background: true}},
+		newPID:  200,
+		newPort: 8080,
+	}
+	mm := &fakeMonMgr{}
+	p := NewMonitorPage(pm, mm, psk)
+	p, _ = updateAs[*MonitorPage](p, monitorInstancesRefreshedMsg{insts: pm.List()})
+
+	_, cmd := p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	if cmd == nil {
+		t.Fatal("r did not produce a Cmd")
+	}
+	_ = cmd()
+	if pm.killedPID != 100 {
+		t.Errorf("killedPID = %d, want 100", pm.killedPID)
+	}
+	if pm.launchedID != "" {
+		t.Errorf("launchedID = %q, want empty (no Launch should run when Get errors)", pm.launchedID)
 	}
 }
 
