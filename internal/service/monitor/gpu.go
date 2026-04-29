@@ -74,9 +74,18 @@ func (p *gpuPoller) tryNvidiaSmi(ctx context.Context) (GPUStats, bool) {
 	if err != nil || len(rec) < 3 {
 		return GPUStats{}, false
 	}
-	used, _ := strconv.ParseUint(strings.TrimSpace(rec[0]), 10, 64)
-	total, _ := strconv.ParseUint(strings.TrimSpace(rec[1]), 10, 64)
-	util, _ := strconv.ParseFloat(strings.TrimSpace(rec[2]), 64)
+	used, err := strconv.ParseUint(strings.TrimSpace(rec[0]), 10, 64)
+	if err != nil {
+		return GPUStats{}, false
+	}
+	total, err := strconv.ParseUint(strings.TrimSpace(rec[1]), 10, 64)
+	if err != nil {
+		return GPUStats{}, false
+	}
+	util, err := strconv.ParseFloat(strings.TrimSpace(rec[2]), 64)
+	if err != nil {
+		return GPUStats{}, false
+	}
 	return GPUStats{VRAMUsedMB: used, VRAMTotalMB: total, Utilization: util, Source: "nvidia-smi"}, true
 }
 

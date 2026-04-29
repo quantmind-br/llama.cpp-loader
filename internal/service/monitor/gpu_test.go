@@ -59,3 +59,28 @@ func TestGPUPoller_MissingNvidiaSmiSilent(t *testing.T) {
 		}
 	}
 }
+
+func TestGPUPoller_MalformedNvidiaSmiSilent(t *testing.T) {
+	dir := t.TempDir()
+	stub := filepath.Join(dir, "nvidia-smi")
+	body := "#!/bin/sh\necho 'N/A, N/A, N/A'\n"
+	if err := os.WriteFile(stub, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cancel()
+
+	out := make(chan MonitorEvent, 4)
+	p := newGPUPoller(0, stub, 50*time.Millisecond, out)
+	go p.run(ctx)
+
+	for {
+		select {
+		case ev := <-out:
+			t.Fatalf("expected no event on malformed CSV, got %+v", ev)
+		case <-ctx.Done():
+			return
+		}
+	}
+}
