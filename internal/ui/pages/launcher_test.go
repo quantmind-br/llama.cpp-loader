@@ -9,7 +9,9 @@ import (
 	"github.com/charmbracelet/x/exp/teatest"
 
 	"github.com/quantmind-br/llama-cpp-loader/internal/domain"
+	"github.com/quantmind-br/llama-cpp-loader/internal/service/processmgr"
 	"github.com/quantmind-br/llama-cpp-loader/internal/service/profilestore"
+	"github.com/quantmind-br/llama-cpp-loader/internal/service/validator"
 )
 
 func TestLauncherPage_ListsProfiles(t *testing.T) {
@@ -35,4 +37,97 @@ func TestLauncherPage_ListsProfiles(t *testing.T) {
 
 	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
 	_ = tm.Quit()
+}
+
+type fakeManager struct {
+	launched []domain.Profile
+	mode     processmgr.LaunchMode
+	nextErr  error
+}
+
+func (f *fakeManager) Launch(p domain.Profile, mode processmgr.LaunchMode) (domain.RunningInstance, error) {
+	if f.nextErr != nil {
+		err := f.nextErr
+		f.nextErr = nil
+		return domain.RunningInstance{}, err
+	}
+	f.launched = append(f.launched, p)
+	f.mode = mode
+	return domain.RunningInstance{ProfileID: p.ID, PID: 4242, Port: 8080, Background: mode == processmgr.LaunchBackground}, nil
+}
+func (f *fakeManager) Kill(pid int) error                             { return nil }
+func (f *fakeManager) List() []domain.RunningInstance                 { return nil }
+func (f *fakeManager) WaitHealthy(_, _ int, _ time.Duration) error    { return nil }
+
+func TestLauncherPage_EnterLaunchesSelected(t *testing.T) {
+	dir := t.TempDir()
+	store, _ := profilestore.NewFSStore(dir)
+	_ = store.Save(domain.Profile{
+		ID: "alpha", Name: "Alpha", Model: "/m.gguf",
+		Args: map[string]any{"port": float64(8080)},
+	})
+
+	mgr := &fakeManager{}
+	page := NewLauncherPage(store, mgr, nil)
+
+	model, _ := page.Update(launcherProfilesLoadedMsg{profiles: []domain.Profile{{
+		ID: "alpha", Name: "Alpha", Model: "/m.gguf",
+		Args: map[string]any{"port": float64(8080)},
+	}}})
+	page = model.(LauncherPage)
+
+	updated, cmd := page.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	page = updated.(LauncherPage)
+
+	if cmd == nil {
+		t.Fatal("Enter did not produce a tea.Cmd")
+	}
+	msg := cmd()
+	switch m := msg.(type) {
+	case launchedMsg:
+		if m.inst.ProfileID != "alpha" {
+			t.Errorf("launched ProfileID = %s, want alpha", m.inst.ProfileID)
+		}
+	case launchErrMsg:
+		t.Fatalf("got launchErrMsg: %v", m.err)
+	default:
+		t.Fatalf("unexpected msg type: %T", msg)
+	}
+
+	if len(mgr.launched) != 1 {
+		t.Errorf("manager.launched len = %d, want 1", len(mgr.launched))
+	}
+	if mgr.mode != processmgr.LaunchBackground {
+		t.Errorf("mode = %v, want LaunchBackground", mgr.mode)
+	}
+}
+
+func TestLauncherPage_ValidationBlocksLaunch(t *testing.T) {
+	dir := t.TempDir()
+	store, _ := profilestore.NewFSStore(dir)
+
+	bad := domain.Profile{
+		ID: "bad", Name: "Bad", Model: "/m.gguf",
+		Args: map[string]any{
+			"port":        float64(8080),
+			"batch-size":  float64(1024),
+			"ubatch-size": float64(2048), // > batch-size -> error
+		},
+	}
+	mgr := &fakeManager{}
+	page := NewLauncherPage(store, mgr, validator.New())
+	model, _ := page.Update(launcherProfilesLoadedMsg{profiles: []domain.Profile{bad}})
+	page = model.(LauncherPage)
+
+	_, cmd := page.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("expected a cmd (with launchErrMsg), got nil")
+	}
+	msg := cmd()
+	if _, ok := msg.(launchErrMsg); !ok {
+		t.Fatalf("expected launchErrMsg from validation, got %T", msg)
+	}
+	if len(mgr.launched) != 0 {
+		t.Errorf("manager.launched len = %d, want 0 (validation should have blocked)", len(mgr.launched))
+	}
 }

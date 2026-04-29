@@ -2,6 +2,7 @@ package pages
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
@@ -59,6 +60,18 @@ type launcherProfilesLoadedMsg struct {
 	err      error
 }
 
+// launchedMsg is emitted after a successful Launch + WaitHealthy.
+type launchedMsg struct {
+	inst domain.RunningInstance
+}
+
+// launchErrMsg is emitted when validation or Launch itself fails.
+type launchErrMsg struct {
+	err error
+}
+
+type healthyMsg struct{ pid int }
+
 type profileItem struct {
 	p domain.Profile
 }
@@ -98,11 +111,57 @@ func (p LauncherPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		p.plist.SetItems(items)
 		return p, nil
 
+	case launchedMsg:
+		p.status = fmt.Sprintf("launched %s pid=%d port=%d", msg.inst.ProfileID, msg.inst.PID, msg.inst.Port)
+		mgr := p.manager
+		port := msg.inst.Port
+		pid := msg.inst.PID
+		return p, func() tea.Msg {
+			if err := mgr.WaitHealthy(pid, port, 30*time.Second); err != nil {
+				return launchErrMsg{err: fmt.Errorf("pid %d not healthy: %w", pid, err)}
+			}
+			return healthyMsg{pid: pid}
+		}
+
+	case healthyMsg:
+		p.status = fmt.Sprintf("healthy pid=%d", msg.pid)
+		return p, nil
+
+	case launchErrMsg:
+		p.status = "error: " + msg.err.Error()
+		return p, nil
+
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "b":
 			p.background = !p.background
 			return p, nil
+		case "enter":
+			it, ok := p.plist.SelectedItem().(profileItem)
+			if !ok || p.manager == nil {
+				return p, nil
+			}
+			selected := it.p
+			val := p.validator
+			schema := p.schema
+			mgr := p.manager
+			mode := processmgr.LaunchBackground
+			if !p.background {
+				mode = processmgr.LaunchForeground
+			}
+			return p, func() tea.Msg {
+				if val != nil {
+					rep := val.Validate(selected, schema)
+					if rep.HasBlockingErrors() {
+						return launchErrMsg{err: fmt.Errorf("validation failed: %d errors", len(rep.Errors))}
+					}
+				}
+				inst, err := mgr.Launch(selected, mode)
+				if err != nil {
+					return launchErrMsg{err: err}
+				}
+				return launchedMsg{inst: inst}
+			}
 		}
 	}
 
