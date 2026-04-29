@@ -2,6 +2,7 @@ package processmgr
 
 import (
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -188,6 +189,31 @@ func (m *fsManager) List() []domain.RunningInstance {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return snapshotLocked(m.tracked)
+}
+
+// TailLogs opens the on-disk log file for a tracked background instance and
+// returns it as an io.ReadCloser. Foreground instances (LogPath=="") return
+// ErrUnknownPID — they have no log file. Caller closes.
+func (m *fsManager) TailLogs(pid int) (io.ReadCloser, error) {
+	logPath := m.logPathForPID(pid)
+	if logPath == "" {
+		return nil, ErrUnknownPID
+	}
+	f, err := os.Open(logPath)
+	if err != nil {
+		return nil, fmt.Errorf("open log: %w", err)
+	}
+	return f, nil
+}
+
+// logPathForPID returns the on-disk log file for pid, or "" if unknown.
+func (m *fsManager) logPathForPID(pid int) string {
+	for _, ri := range m.List() {
+		if ri.PID == pid {
+			return ri.LogPath
+		}
+	}
+	return ""
 }
 
 func snapshotLocked(t map[int]domain.RunningInstance) []domain.RunningInstance {

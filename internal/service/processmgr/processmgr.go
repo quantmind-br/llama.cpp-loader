@@ -3,6 +3,7 @@ package processmgr
 
 import (
 	"errors"
+	"io"
 	"time"
 
 	"github.com/quantmind-br/llama-cpp-loader/internal/domain"
@@ -26,6 +27,7 @@ type Manager interface {
 	Kill(pid int) error
 	List() []domain.RunningInstance
 	WaitHealthy(pid, port int, timeout time.Duration) error
+	TailLogs(pid int) (io.ReadCloser, error)
 }
 
 // LastUsedSink is a minimal callback to update Profile.Meta.LastUsedAt.

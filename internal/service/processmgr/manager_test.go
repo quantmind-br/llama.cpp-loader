@@ -148,6 +148,45 @@ func TestManager_Launch_NotifiesLastUsedSink(t *testing.T) {
 	}
 }
 
+func TestTailLogs_HappyPath(t *testing.T) {
+	mgr, _ := newTestManager(t)
+	port := freePort(t)
+	p := domain.Profile{
+		ID:    "tail",
+		Name:  "Tail",
+		Model: "/dev/null",
+		Args:  map[string]any{"port": float64(port)},
+	}
+	inst, err := mgr.Launch(p, LaunchBackground)
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	defer mgr.Kill(inst.PID)
+
+	if err := mgr.WaitHealthy(inst.PID, port, 5*time.Second); err != nil {
+		t.Fatalf("WaitHealthy: %v", err)
+	}
+
+	rc, err := mgr.TailLogs(inst.PID)
+	if err != nil {
+		t.Fatalf("TailLogs: %v", err)
+	}
+	defer rc.Close()
+
+	buf := make([]byte, 256)
+	n, _ := rc.Read(buf)
+	if n == 0 {
+		t.Fatal("TailLogs returned empty buffer")
+	}
+}
+
+func TestTailLogs_UnknownPID(t *testing.T) {
+	mgr, _ := newTestManager(t)
+	if _, err := mgr.TailLogs(999_999); !errors.Is(err, ErrUnknownPID) {
+		t.Fatalf("err = %v, want ErrUnknownPID", err)
+	}
+}
+
 func TestManager_Foreground_OnlyOneAllowed(t *testing.T) {
 	mgr, _ := newTestManager(t)
 	port1 := freePort(t)
