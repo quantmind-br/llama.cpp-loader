@@ -32,15 +32,23 @@ func (s *FSStore) path(id string) string {
 }
 
 func (s *FSStore) List() ([]domain.Profile, error) {
+	profiles, _, err := s.ListWithDiagnostics()
+	return profiles, err
+}
+
+// ListWithDiagnostics retorna profiles válidos + lista de entries corruptas.
+// O agregado nunca aborta a varredura inteira por uma entry quebrada;
+// erros de I/O do diretório raiz, esses sim, retornam err != nil.
+func (s *FSStore) ListWithDiagnostics() ([]domain.Profile, []ListDiagnostic, error) {
 	entries, err := os.ReadDir(s.dir)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return nil, nil
+			return nil, nil, nil
 		}
-		return nil, fmt.Errorf("read profiles dir: %w", err)
+		return nil, nil, fmt.Errorf("read profiles dir: %w", err)
 	}
-
 	profiles := make([]domain.Profile, 0, len(entries))
+	var diags []ListDiagnostic
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
 			continue
@@ -48,7 +56,7 @@ func (s *FSStore) List() ([]domain.Profile, error) {
 		id := strings.TrimSuffix(e.Name(), ".json")
 		p, err := s.Get(id)
 		if err != nil {
-			// Skip corrupt entries — slice 1 surfaces this in UI later via marker.
+			diags = append(diags, ListDiagnostic{ID: id, Err: err})
 			continue
 		}
 		profiles = append(profiles, p)
@@ -56,7 +64,7 @@ func (s *FSStore) List() ([]domain.Profile, error) {
 	sort.Slice(profiles, func(i, j int) bool {
 		return profiles[i].Name < profiles[j].Name
 	})
-	return profiles, nil
+	return profiles, diags, nil
 }
 
 func (s *FSStore) Get(id string) (domain.Profile, error) {
