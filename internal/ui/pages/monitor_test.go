@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/quantmind-br/llama-cpp-loader/internal/domain"
 	"github.com/quantmind-br/llama-cpp-loader/internal/service/monitor"
 	"github.com/quantmind-br/llama-cpp-loader/internal/service/processmgr"
@@ -52,4 +54,36 @@ func TestMonitorPage_RendersInstanceRows(t *testing.T) {
 	if !strings.Contains(view, "5678") {
 		t.Fatalf("view missing pid 5678:\n%s", view)
 	}
+}
+
+func TestMonitorPage_LogsSubViewShowsLines(t *testing.T) {
+	pm := &fakeProcMgr{insts: []domain.RunningInstance{{PID: 1, Port: 8080, LogPath: "/tmp/x.log"}}}
+
+	mm := &chanMonMgr{ch: make(chan monitor.MonitorEvent, 8)}
+	p := NewMonitorPage(pm, mm)
+	p.SetSize(120, 30)
+	if cmd := p.Init(); cmd != nil {
+		if msg := cmd(); msg != nil {
+			p.Update(msg)
+		}
+	}
+
+	mm.ch <- monitor.MonitorEvent{Source: monitor.SourceLogs, PID: 1, Data: monitor.LogLine{Line: "boot complete"}}
+	p, _ = updateAs[*MonitorPage](p, monitorEventMsg{ev: <-mm.ch})
+
+	v := p.View()
+	if !strings.Contains(v, "boot complete") {
+		t.Fatalf("logs view missing 'boot complete':\n%s", v)
+	}
+}
+
+type chanMonMgr struct{ ch chan monitor.MonitorEvent }
+
+func (m *chanMonMgr) Subscribe(pid, port int, logPath string) (<-chan monitor.MonitorEvent, func() error, error) {
+	return m.ch, func() error { return nil }, nil
+}
+
+func updateAs[T tea.Model](p tea.Model, msg tea.Msg) (T, tea.Cmd) {
+	out, cmd := p.Update(msg)
+	return out.(T), cmd
 }

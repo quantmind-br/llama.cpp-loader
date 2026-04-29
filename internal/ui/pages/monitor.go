@@ -3,6 +3,7 @@ package pages
 import (
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
@@ -12,6 +13,32 @@ import (
 	"github.com/quantmind-br/llama-cpp-loader/internal/service/monitor"
 	"github.com/quantmind-br/llama-cpp-loader/internal/service/processmgr"
 )
+
+// SubViewKind selects which bottom region the MonitorPage renders.
+type SubViewKind int
+
+const (
+	SubViewLogs SubViewKind = iota
+	SubViewSlots
+	SubViewMetrics
+)
+
+// monitorEventMsg wraps a monitor.MonitorEvent received from a per-instance
+// subscription channel. Re-armed via listenCmd after each delivery.
+type monitorEventMsg struct {
+	ev monitor.MonitorEvent
+}
+
+// listenCmd reads one event from ch and re-arms itself when handled.
+func listenCmd(ch <-chan monitor.MonitorEvent) tea.Cmd {
+	return func() tea.Msg {
+		ev, ok := <-ch
+		if !ok {
+			return nil
+		}
+		return monitorEventMsg{ev: ev}
+	}
+}
 
 // procMgrIface is the slice of processmgr.Manager that MonitorPage needs.
 type procMgrIface interface {
@@ -33,12 +60,14 @@ type subState struct {
 }
 
 type MonitorPage struct {
-	pm     procMgrIface
-	mm     monitor.Manager
-	tbl    table.Model
-	subs   map[int]*subState
-	width  int
-	height int
+	pm      procMgrIface
+	mm      monitor.Manager
+	tbl     table.Model
+	subs    map[int]*subState
+	chans   map[int]<-chan monitor.MonitorEvent
+	subView SubViewKind
+	width   int
+	height  int
 }
 
 func NewMonitorPage(pm procMgrIface, mm monitor.Manager) *MonitorPage {
@@ -51,7 +80,13 @@ func NewMonitorPage(pm procMgrIface, mm monitor.Manager) *MonitorPage {
 		{Title: "Tokens/s", Width: 10},
 	}
 	t := table.New(table.WithColumns(cols), table.WithFocused(true), table.WithHeight(8))
-	return &MonitorPage{pm: pm, mm: mm, tbl: t, subs: map[int]*subState{}}
+	return &MonitorPage{
+		pm:    pm,
+		mm:    mm,
+		tbl:   t,
+		subs:  map[int]*subState{},
+		chans: map[int]<-chan monitor.MonitorEvent{},
+	}
 }
 
 func (p *MonitorPage) SetSize(w, h int) {
@@ -70,16 +105,55 @@ type monitorInstancesRefreshedMsg struct {
 }
 
 func (p *MonitorPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmds []tea.Cmd
 	switch m := msg.(type) {
 	case monitorInstancesRefreshedMsg:
-		p.applyInstances(m.insts)
+		if c := p.applyInstances(m.insts); c != nil {
+			cmds = append(cmds, c)
+		}
+	case monitorEventMsg:
+		st, ok := p.subs[m.ev.PID]
+		if ok {
+			switch m.ev.Source {
+			case monitor.SourceLogs:
+				if line, ok := m.ev.Data.(monitor.LogLine); ok {
+					st.logs = append(st.logs, line.Line)
+					if len(st.logs) > 2000 {
+						st.logs = st.logs[len(st.logs)-2000:]
+					}
+				}
+			case monitor.SourceSlots:
+				if s, ok := m.ev.Data.(monitor.SlotSnapshot); ok {
+					st.slots = s
+				}
+			case monitor.SourceGPU:
+				if g, ok := m.ev.Data.(monitor.GPUStats); ok {
+					st.gpu = g
+				}
+			case monitor.SourceHealth:
+				if h, ok := m.ev.Data.(monitor.HealthStatus); ok {
+					st.health = h
+				}
+			case monitor.SourceMetrics:
+				if mts, ok := m.ev.Data.(monitor.Metrics); ok {
+					st.mets = mts
+				}
+			}
+		}
+		// Re-arm listener for this PID.
+		if ch, ok := p.chans[m.ev.PID]; ok {
+			cmds = append(cmds, listenCmd(ch))
+		}
 	}
-	t, cmd := p.tbl.Update(msg)
+	t, tc := p.tbl.Update(msg)
 	p.tbl = t
-	return p, cmd
+	if tc != nil {
+		cmds = append(cmds, tc)
+	}
+	return p, tea.Batch(cmds...)
 }
 
-func (p *MonitorPage) applyInstances(insts []domain.RunningInstance) {
+func (p *MonitorPage) applyInstances(insts []domain.RunningInstance) tea.Cmd {
 	rows := make([]table.Row, 0, len(insts))
 	for _, ri := range insts {
 		rows = append(rows, table.Row{
@@ -90,6 +164,34 @@ func (p *MonitorPage) applyInstances(insts []domain.RunningInstance) {
 		})
 	}
 	p.tbl.SetRows(rows)
+
+	// Add subs for new instances; collect listenCmds.
+	var cmds []tea.Cmd
+	for _, ri := range insts {
+		if _, ok := p.subs[ri.PID]; ok {
+			continue
+		}
+		ch, cancel, err := p.mm.Subscribe(ri.PID, ri.Port, ri.LogPath)
+		if err != nil {
+			continue
+		}
+		p.subs[ri.PID] = &subState{cancel: cancel}
+		p.chans[ri.PID] = ch
+		cmds = append(cmds, listenCmd(ch))
+	}
+	// Cancel orphan subs.
+	seen := make(map[int]bool, len(insts))
+	for _, ri := range insts {
+		seen[ri.PID] = true
+	}
+	for pid, st := range p.subs {
+		if !seen[pid] {
+			_ = st.cancel()
+			delete(p.subs, pid)
+			delete(p.chans, pid)
+		}
+	}
+	return tea.Batch(cmds...)
 }
 
 func (p *MonitorPage) View() string {
@@ -97,7 +199,24 @@ func (p *MonitorPage) View() string {
 	if len(p.tbl.Rows()) == 0 {
 		return header + "\n  (none)"
 	}
-	return header + "\n" + p.tbl.View()
+	top := header + "\n" + p.tbl.View()
+	pid := p.selectedPID()
+	st := p.subs[pid]
+	bottom := "no subscription"
+	if st != nil {
+		switch p.subView {
+		case SubViewLogs:
+			start := len(st.logs) - 10
+			if start < 0 {
+				start = 0
+			}
+			bottom = strings.Join(st.logs[start:], "\n")
+			if bottom == "" {
+				bottom = "(no log lines yet)"
+			}
+		}
+	}
+	return top + "\n\n" + bottom
 }
 
 // selectedPID returns the PID of the currently selected row, or 0 if no rows.
