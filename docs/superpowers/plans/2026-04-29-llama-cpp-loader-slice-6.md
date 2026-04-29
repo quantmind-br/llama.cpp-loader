@@ -2406,20 +2406,13 @@ EOF
 
 Não há código. Objetivo: validar manualmente que o binário compila, abre, navega, todos os fluxos críticos funcionam contra o `fake-llama-server.sh`.
 
-- [ ] **Step 1: Build**
+- [x] **Step 1: Build** — `go build ./...` clean, no warnings.
 
-Run: `go build ./...`
-Expected: success, sem warnings.
+- [x] **Step 2: Vet** — `go vet ./...` clean.
 
-- [ ] **Step 2: Vet**
+- [x] **Step 3: Tests** — `go test ./internal/...` 196/196 passed in 12 packages.
 
-Run: `go vet ./...`
-Expected: clean.
-
-- [ ] **Step 3: Tests**
-
-Run: `go test ./internal/...`
-Expected: PASS.
+> **Manual TTY smokes (Steps 4–11) deferred to user verification.** Each requires interacting with the running TUI, which the implementation flow can't drive. Run `./llama-cpp-loader` after merge and tick below as you confirm each.
 
 - [ ] **Step 4: Smoke check — `?` modal abre/fecha**
 
