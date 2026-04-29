@@ -115,6 +115,46 @@ type monitorInstancesRefreshedMsg struct {
 	insts []domain.RunningInstance
 }
 
+// restartCmd kills the instance with pid and relaunches the same profile in
+// background mode. Falls back to plain kill when ps is nil (no store wired).
+// On any error, the command emits a no-op msg; UI surfaces the error via the
+// next instance refresh.
+func (p *MonitorPage) restartCmd(pid int) tea.Cmd {
+	insts := p.pm.List()
+	var inst *domain.RunningInstance
+	for i := range insts {
+		if insts[i].PID == pid {
+			inst = &insts[i]
+			break
+		}
+	}
+	if inst == nil {
+		return p.refreshInstancesCmd()
+	}
+	pm := p.pm
+	ps := p.ps
+	profileID := inst.ProfileID
+	bg := inst.Background
+	return tea.Batch(
+		func() tea.Msg {
+			_ = pm.Kill(pid)
+			if ps == nil {
+				return monitorInstancesRefreshedMsg{insts: pm.List()}
+			}
+			prof, err := ps.Get(profileID)
+			if err != nil {
+				return monitorInstancesRefreshedMsg{insts: pm.List()}
+			}
+			mode := processmgr.LaunchBackground
+			if !bg {
+				mode = processmgr.LaunchForeground
+			}
+			_, _ = pm.Launch(prof, mode)
+			return monitorInstancesRefreshedMsg{insts: pm.List()}
+		},
+	)
+}
+
 func (p *MonitorPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 	switch m := msg.(type) {
@@ -130,10 +170,8 @@ func (p *MonitorPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, p.refreshInstancesCmd())
 			}
 		case m.Type == tea.KeyRunes && len(m.Runes) == 1 && m.Runes[0] == 'r':
-			// Slice-5: r==kill (real restart needs ProfileStore — deferred to slice 6).
 			if pid := p.selectedPID(); pid > 0 {
-				_ = p.pm.Kill(pid)
-				cmds = append(cmds, p.refreshInstancesCmd())
+				cmds = append(cmds, p.restartCmd(pid))
 			}
 		case m.Type == tea.KeySpace:
 			p.paused = !p.paused

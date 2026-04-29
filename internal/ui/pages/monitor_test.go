@@ -309,6 +309,73 @@ func TestMonitorPage_HandlesWindowSize(t *testing.T) {
 	}
 }
 
+func TestMonitorPage_RTriggersRestart(t *testing.T) {
+	prof := domain.Profile{
+		ID:    "qwen",
+		Name:  "Qwen",
+		Model: "/tmp/x.gguf",
+		Args:  map[string]any{"port": 8080.0},
+	}
+	psk := &fakeProfileStore{p: prof}
+	pm := &restartTrackingMgr{
+		insts:   []domain.RunningInstance{{ProfileID: "qwen", PID: 100, Port: 8080, LogPath: "/tmp/a.log", Background: true}},
+		newPID:  200,
+		newPort: 8080,
+	}
+	mm := &fakeMonMgr{}
+	p := NewMonitorPage(pm, mm, psk)
+	p, _ = updateAs[*MonitorPage](p, monitorInstancesRefreshedMsg{insts: pm.List()})
+
+	// Press 'r' on the selected (only) row.
+	_, cmd := p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	if cmd == nil {
+		t.Fatal("r did not produce a Cmd")
+	}
+	// Run the cmd: kill + launch should happen synchronously inside it.
+	_ = cmd()
+	if pm.killedPID != 100 {
+		t.Errorf("killedPID = %d, want 100", pm.killedPID)
+	}
+	if pm.launchedID != "qwen" {
+		t.Errorf("launchedID = %q, want qwen", pm.launchedID)
+	}
+	if pm.launchMode != processmgr.LaunchBackground {
+		t.Errorf("launchMode = %v, want LaunchBackground", pm.launchMode)
+	}
+}
+
+type fakeProfileStore struct {
+	p   domain.Profile
+	err error
+}
+
+func (f *fakeProfileStore) Get(id string) (domain.Profile, error) {
+	if f.err != nil {
+		return domain.Profile{}, f.err
+	}
+	return f.p, nil
+}
+
+type restartTrackingMgr struct {
+	insts      []domain.RunningInstance
+	killedPID  int
+	launchedID string
+	launchMode processmgr.LaunchMode
+	newPID     int
+	newPort    int
+}
+
+func (r *restartTrackingMgr) List() []domain.RunningInstance { return r.insts }
+func (r *restartTrackingMgr) Kill(pid int) error             { r.killedPID = pid; return nil }
+func (r *restartTrackingMgr) TailLogs(_ int) (io.ReadCloser, error) {
+	return nil, processmgr.ErrUnknownPID
+}
+func (r *restartTrackingMgr) Launch(p domain.Profile, mode processmgr.LaunchMode) (domain.RunningInstance, error) {
+	r.launchedID = p.ID
+	r.launchMode = mode
+	return domain.RunningInstance{ProfileID: p.ID, PID: r.newPID, Port: r.newPort, Background: true}, nil
+}
+
 func TestMonitorPage_CancelOrphanIsAsync(t *testing.T) {
 	// Cancel func will block until release is signaled — simulating a
 	// stuck nvidia-smi that takes time to reap. The test asserts that
