@@ -14,6 +14,7 @@ import (
 	"github.com/quantmind-br/llama-cpp-loader/internal/service/monitor"
 	"github.com/quantmind-br/llama-cpp-loader/internal/service/processmgr"
 	"github.com/quantmind-br/llama-cpp-loader/internal/ui/components"
+	"github.com/quantmind-br/llama-cpp-loader/internal/ui/theme"
 )
 
 // SubViewKind selects which bottom region the MonitorPage renders.
@@ -312,7 +313,7 @@ func (p *MonitorPage) applyInstances(insts []domain.RunningInstance) tea.Cmd {
 }
 
 func (p *MonitorPage) View() string {
-	footer := lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render(
+	footer := theme.Subtitle.Render(
 		"[Tab] cycle view  [Space] pause  [k] kill  [r] restart  [?] help",
 	)
 	header := lipgloss.NewStyle().Bold(true).Render("Running instances")
