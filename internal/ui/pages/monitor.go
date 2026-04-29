@@ -67,6 +67,7 @@ type MonitorPage struct {
 	subs    map[int]*subState
 	chans   map[int]<-chan monitor.MonitorEvent
 	subView SubViewKind
+	paused  bool
 	width   int
 	height  int
 }
@@ -109,8 +110,20 @@ func (p *MonitorPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 	switch m := msg.(type) {
 	case tea.KeyMsg:
-		if m.Type == tea.KeyTab {
+		switch {
+		case m.Type == tea.KeyTab:
 			p.subView = (p.subView + 1) % 3
+		case m.Type == tea.KeyRunes && len(m.Runes) == 1 && m.Runes[0] == 'k':
+			if pid := p.selectedPID(); pid > 0 {
+				_ = p.pm.Kill(pid)
+			}
+		case m.Type == tea.KeyRunes && len(m.Runes) == 1 && m.Runes[0] == 'r':
+			// Slice-5: r==kill (real restart needs ProfileStore — deferred to slice 6).
+			if pid := p.selectedPID(); pid > 0 {
+				_ = p.pm.Kill(pid)
+			}
+		case m.Type == tea.KeySpace:
+			p.paused = !p.paused
 		}
 	case monitorInstancesRefreshedMsg:
 		if c := p.applyInstances(m.insts); c != nil {
@@ -122,9 +135,11 @@ func (p *MonitorPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch m.ev.Source {
 			case monitor.SourceLogs:
 				if line, ok := m.ev.Data.(monitor.LogLine); ok {
-					st.logs = append(st.logs, line.Line)
-					if len(st.logs) > 2000 {
-						st.logs = st.logs[len(st.logs)-2000:]
+					if !p.paused {
+						st.logs = append(st.logs, line.Line)
+						if len(st.logs) > 2000 {
+							st.logs = st.logs[len(st.logs)-2000:]
+						}
 					}
 				}
 			case monitor.SourceSlots:

@@ -144,3 +144,24 @@ func TestMonitorPage_MetricsViewRendersSparkline(t *testing.T) {
 		t.Fatalf("metrics view has no sparkline bar")
 	}
 }
+
+func TestMonitorPage_KKillsSelectedPID(t *testing.T) {
+	pm := &killTrackingMgr{fakeProcMgr: fakeProcMgr{insts: []domain.RunningInstance{{PID: 7, Port: 8080, LogPath: "/tmp/x.log"}}}}
+	mm := &chanMonMgr{ch: make(chan monitor.MonitorEvent, 8)}
+	p := NewMonitorPage(pm, mm)
+	p.SetSize(120, 30)
+	p, _ = updateAs[*MonitorPage](p, monitorInstancesRefreshedMsg{insts: pm.List()})
+
+	p, _ = updateAs[*MonitorPage](p, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+
+	if pm.killed != 7 {
+		t.Fatalf("expected Kill(7), got Kill(%d)", pm.killed)
+	}
+}
+
+type killTrackingMgr struct {
+	fakeProcMgr
+	killed int
+}
+
+func (m *killTrackingMgr) Kill(pid int) error { m.killed = pid; return nil }
