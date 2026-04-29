@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-func TestSubscribe_FansInLogsAndSlots(t *testing.T) {
+func TestSubscribe_FansInLogsSlotsAndHealth(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "server.log")
 	if err := os.WriteFile(logPath, []byte(""), 0o644); err != nil {
