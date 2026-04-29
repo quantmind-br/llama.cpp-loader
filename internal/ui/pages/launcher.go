@@ -2,6 +2,7 @@ package pages
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/list"
@@ -27,6 +28,7 @@ type LauncherPage struct {
 
 	background bool
 	status     string
+	running    []domain.RunningInstance
 
 	width, height int
 	loadErr       error
@@ -112,6 +114,7 @@ func (p LauncherPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return p, nil
 
 	case launchedMsg:
+		p.running = append(p.running, msg.inst)
 		p.status = fmt.Sprintf("launched %s pid=%d port=%d", msg.inst.ProfileID, msg.inst.PID, msg.inst.Port)
 		mgr := p.manager
 		port := msg.inst.Port
@@ -135,6 +138,24 @@ func (p LauncherPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "b":
 			p.background = !p.background
+			return p, nil
+		case "k":
+			if len(p.running) == 0 || p.manager == nil {
+				return p, nil
+			}
+			pid := p.running[len(p.running)-1].PID
+			if err := p.manager.Kill(pid); err != nil {
+				p.status = "error: " + err.Error()
+				return p, nil
+			}
+			out := p.running[:0]
+			for _, ri := range p.running {
+				if ri.PID != pid {
+					out = append(out, ri)
+				}
+			}
+			p.running = out
+			p.status = fmt.Sprintf("killed pid=%d", pid)
 			return p, nil
 		case "enter":
 			it, ok := p.plist.SelectedItem().(profileItem)
@@ -199,5 +220,18 @@ func (p LauncherPage) View() string {
 	if p.status != "" {
 		footer = p.status + "  |  " + footer
 	}
-	return lipgloss.JoinVertical(lipgloss.Left, body, footer)
+	runningView := "Running: (none)"
+	if len(p.running) > 0 {
+		lines := []string{theme.Subtitle.Render("Running")}
+		for _, ri := range p.running {
+			tag := "fg"
+			if ri.Background {
+				tag = "bg"
+			}
+			lines = append(lines, fmt.Sprintf("  %s pid=%d port=%d %s", ri.ProfileID, ri.PID, ri.Port, tag))
+		}
+		runningView = strings.Join(lines, "\n")
+	}
+
+	return lipgloss.JoinVertical(lipgloss.Left, body, "", runningView, footer)
 }

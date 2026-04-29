@@ -131,3 +131,29 @@ func TestLauncherPage_ValidationBlocksLaunch(t *testing.T) {
 		t.Errorf("manager.launched len = %d, want 0 (validation should have blocked)", len(mgr.launched))
 	}
 }
+
+func TestLauncherPage_KillRemovesInstance(t *testing.T) {
+	dir := t.TempDir()
+	store, _ := profilestore.NewFSStore(dir)
+	_ = store.Save(domain.Profile{
+		ID: "alpha", Name: "Alpha", Model: "/m.gguf",
+		Args: map[string]any{"port": float64(8080)},
+	})
+
+	mgr := &fakeManager{}
+	page := NewLauncherPage(store, mgr, nil)
+
+	// Inject one running instance via launchedMsg.
+	model, _ := page.Update(launchedMsg{inst: domain.RunningInstance{ProfileID: "alpha", PID: 4242, Port: 8080, Background: true}})
+	page = model.(LauncherPage)
+	if len(page.running) != 1 {
+		t.Fatalf("running len = %d, want 1", len(page.running))
+	}
+
+	// Press 'k' — should call mgr.Kill(4242) and drop from page.running.
+	updated, _ := page.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+	page = updated.(LauncherPage)
+	if len(page.running) != 0 {
+		t.Errorf("running len after kill = %d, want 0", len(page.running))
+	}
+}
