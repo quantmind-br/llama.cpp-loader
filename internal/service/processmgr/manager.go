@@ -23,8 +23,7 @@ type fsManager struct {
 
 	mu      sync.Mutex
 	tracked map[int]domain.RunningInstance // pid -> instance
-	cmds    map[int]*exec.Cmd              // pid -> cmd, for zombie reaping
-	fgPID   int                            // 0 if no foreground active
+	fgPID   int                            // 0 if no foreground active; -1 if launching
 }
 
 // Config holds wiring for New. Caller owns the paths; the manager creates
@@ -47,7 +46,6 @@ func New(cfg Config) *fsManager {
 		logDir:       cfg.LogDir,
 		registryPath: cfg.RegistryPath,
 		tracked:      map[int]domain.RunningInstance{},
-		cmds:         map[int]*exec.Cmd{},
 	}
 }
 
@@ -97,7 +95,6 @@ func (m *fsManager) Launch(p domain.Profile, mode LaunchMode) (domain.RunningIns
 
 	m.mu.Lock()
 	m.tracked[inst.PID] = inst
-	m.cmds[inst.PID] = cmd
 	all := snapshotLocked(m.tracked)
 	m.mu.Unlock()
 
@@ -166,7 +163,6 @@ func (m *fsManager) Kill(pid int) error {
 
 	m.mu.Lock()
 	delete(m.tracked, pid)
-	delete(m.cmds, pid)
 	if m.fgPID == pid {
 		m.fgPID = 0
 	}
@@ -235,13 +231,19 @@ func (m *fsManager) launchForeground(p domain.Profile, port int) (domain.Running
 		m.mu.Unlock()
 		return domain.RunningInstance{}, ErrForegroundBusy
 	}
+	m.fgPID = -1 // sentinel: launching in progress
 	m.mu.Unlock()
 
 	cmd := exec.Command(m.binary, BuildArgs(p)...)
 	// Inherit stdout/stderr — caller drains via TailLogs in slice 5.
 	if err := cmd.Start(); err != nil {
+		// Roll back sentinel so future calls can proceed.
+		m.mu.Lock()
+		m.fgPID = 0
+		m.mu.Unlock()
 		return domain.RunningInstance{}, fmt.Errorf("start llama-server (fg): %w", err)
 	}
+	go func() { _ = cmd.Wait() }()
 
 	inst := domain.RunningInstance{
 		ProfileID:  p.ID,
@@ -254,13 +256,9 @@ func (m *fsManager) launchForeground(p domain.Profile, port int) (domain.Running
 
 	m.mu.Lock()
 	m.tracked[inst.PID] = inst
-	m.cmds[inst.PID] = cmd
-	m.fgPID = inst.PID
+	m.fgPID = inst.PID // replaces -1 sentinel
 	all := snapshotLocked(m.tracked)
 	m.mu.Unlock()
-
-	// Reap zombie automatically so Kill's signal-0 poll terminates quickly.
-	go func() { _ = cmd.Wait() }()
 
 	if err := saveRegistry(m.registryPath, all); err != nil {
 		return inst, fmt.Errorf("fg started but registry save failed: %w", err)
