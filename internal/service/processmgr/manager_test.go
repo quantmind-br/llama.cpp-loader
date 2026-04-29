@@ -78,6 +78,23 @@ func TestManager_LaunchBackground_WaitsHealthyAndPersists(t *testing.T) {
 	}
 }
 
+func TestManager_Launch_ModelMissing(t *testing.T) {
+	mgr, _ := newTestManager(t)
+	port := freePort(t)
+	p := domain.Profile{
+		ID:    "missing",
+		Model: "/nonexistent/path/to/model.gguf",
+		Args:  map[string]any{"port": float64(port)},
+	}
+	_, err := mgr.Launch(p, LaunchBackground)
+	if err == nil {
+		t.Fatal("expected ErrModelNotFound, got nil")
+	}
+	if !errors.Is(err, ErrModelNotFound) {
+		t.Fatalf("err = %v, want ErrModelNotFound", err)
+	}
+}
+
 func TestManager_LaunchBackground_PortBusy(t *testing.T) {
 	mgr, _ := newTestManager(t)
 

@@ -1,8 +1,10 @@
 package processmgr
 
 import (
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"os"
@@ -57,6 +59,15 @@ func New(cfg Config) *fsManager {
 // between background (detached, log-to-file) and foreground (stdout/stderr
 // inherit; only one allowed at a time — covered in Task 6).
 func (m *fsManager) Launch(p domain.Profile, mode LaunchMode) (domain.RunningInstance, error) {
+	if p.Model == "" {
+		return domain.RunningInstance{}, ErrModelNotFound
+	}
+	if _, err := os.Stat(p.Model); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return domain.RunningInstance{}, fmt.Errorf("%w: %s", ErrModelNotFound, p.Model)
+		}
+		return domain.RunningInstance{}, fmt.Errorf("stat model: %w", err)
+	}
 	port, ok := portFromProfile(p)
 	if !ok {
 		return domain.RunningInstance{}, fmt.Errorf("profile %q: missing or invalid port arg", p.ID)

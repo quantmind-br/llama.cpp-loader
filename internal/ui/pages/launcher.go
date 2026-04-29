@@ -1,6 +1,7 @@
 package pages
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -51,6 +52,23 @@ func NewLauncherPage(store profilestore.Store, manager processmgr.Manager, val v
 	}
 }
 
+// friendlyLaunchError translates sentinel manager errors into actionable
+// hints shown in the page status line.
+func friendlyLaunchError(err error) string {
+	switch {
+	case errors.Is(err, processmgr.ErrPortBusy):
+		return "error: port in use — change the profile port or kill the running PID"
+	case errors.Is(err, processmgr.ErrModelNotFound):
+		return "error: model file not found — fix the profile's Model path"
+	case errors.Is(err, processmgr.ErrForegroundBusy):
+		return "error: a foreground instance is already running — toggle [b] to background mode"
+	case errors.Is(err, processmgr.ErrHealthCheckTimeout):
+		return "error: server did not become healthy within timeout — check logs"
+	default:
+		return "error: " + err.Error()
+	}
+}
+
 // SetSchema injects the FlagSchema (used by validator at launch time).
 func (p LauncherPage) SetSchema(s domain.FlagSchema) LauncherPage {
 	p.schema = s
@@ -78,8 +96,10 @@ type profileItem struct {
 	p domain.Profile
 }
 
-func (i profileItem) Title() string       { return i.p.Name }
-func (i profileItem) Description() string { return fmt.Sprintf("%s | port %v", i.p.ID, i.p.Args["port"]) }
+func (i profileItem) Title() string { return i.p.Name }
+func (i profileItem) Description() string {
+	return fmt.Sprintf("%s | port %v", i.p.ID, i.p.Args["port"])
+}
 func (i profileItem) FilterValue() string { return i.p.Name }
 
 func (p LauncherPage) Init() tea.Cmd {
@@ -132,7 +152,7 @@ func (p LauncherPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return p, func() tea.Msg { return SwitchToMonitorMsg{PID: pid} }
 
 	case launchErrMsg:
-		p.status = "error: " + msg.err.Error()
+		p.status = friendlyLaunchError(msg.err)
 		return p, nil
 
 	case tea.KeyMsg:
