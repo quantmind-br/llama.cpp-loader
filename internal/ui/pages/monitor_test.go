@@ -248,6 +248,42 @@ func (m *countingMonMgr) Subscribe(pid, port int, logPath string) (<-chan monito
 	}, nil
 }
 
+func TestMonitorPage_SelectsRowByPID(t *testing.T) {
+	pm := &fakeProcMgr{insts: []domain.RunningInstance{
+		{PID: 100, Port: 8080, LogPath: "/tmp/a.log"},
+		{PID: 200, Port: 8081, LogPath: "/tmp/b.log"},
+		{PID: 300, Port: 8082, LogPath: "/tmp/c.log"},
+	}}
+	mm := &fakeMonMgr{}
+	p := NewMonitorPage(pm, mm, nil)
+	p, _ = updateAs[*MonitorPage](p, monitorInstancesRefreshedMsg{insts: pm.List()})
+	// Default selection is row 0 (PID 100). Send select msg for PID 200.
+	// The public handler returns a tea.Batch of (refreshInstancesCmd,
+	// internal-select-msg cmd). Drain those cmds so the internal msg is
+	// fed back into Update and selectRow runs. updateAs only invokes
+	// Update; it does not auto-execute returned cmds.
+	p, cmd := updateAs[*MonitorPage](p, MonitorSelectPIDMsg{PID: 200})
+	if cmd == nil {
+		t.Fatal("expected cmd from MonitorSelectPIDMsg")
+	}
+	switch m := cmd().(type) {
+	case tea.BatchMsg:
+		for _, c := range m {
+			if c == nil {
+				continue
+			}
+			if inner := c(); inner != nil {
+				p, _ = updateAs[*MonitorPage](p, inner)
+			}
+		}
+	default:
+		p, _ = updateAs[*MonitorPage](p, m)
+	}
+	if got := p.selectedPID(); got != 200 {
+		t.Fatalf("selectedPID = %d, want 200", got)
+	}
+}
+
 func TestMonitorPage_HandlesWindowSize(t *testing.T) {
 	pm := &fakeProcMgr{}
 	mm := fakeMonMgr{}

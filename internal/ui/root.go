@@ -127,7 +127,10 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case pages.SwitchToMonitorMsg:
 		m.active = TabMonitor
-		return m, nil
+		// Forward the PID so MonitorPage can refresh + select that row.
+		updated, cmd := m.pages[TabMonitor].Update(pages.MonitorSelectPIDMsg{PID: msg.PID})
+		m.pages[TabMonitor] = updated
+		return m, cmd
 
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height

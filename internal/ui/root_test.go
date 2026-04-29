@@ -114,3 +114,33 @@ func TestRoot_RoutesSwitchToMonitorMsg(t *testing.T) {
 		t.Fatalf("active = %d, want TabMonitor=%d", r.active, TabMonitor)
 	}
 }
+
+func TestRoot_ForwardsSwitchPIDToMonitor(t *testing.T) {
+	rec := &recordingMonitor{}
+	r := NewRoot(TabProfiles).
+		WithProfilesPage(pages.Placeholder{TabName: "P"}).
+		WithLauncherPage(pages.Placeholder{TabName: "L"}).
+		WithMonitorPage(rec).
+		WithModelsPage(pages.Placeholder{TabName: "M"})
+	updated, _ := r.Update(pages.SwitchToMonitorMsg{PID: 4321})
+	rm := updated.(RootModel)
+	if rm.active != TabMonitor {
+		t.Errorf("active = %v, want TabMonitor", rm.active)
+	}
+	if rec.lastSelectPID != 4321 {
+		t.Errorf("rec.lastSelectPID = %d, want 4321", rec.lastSelectPID)
+	}
+}
+
+type recordingMonitor struct {
+	lastSelectPID int
+}
+
+func (r *recordingMonitor) Init() tea.Cmd { return nil }
+func (r *recordingMonitor) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if m, ok := msg.(pages.MonitorSelectPIDMsg); ok {
+		r.lastSelectPID = m.PID
+	}
+	return r, nil
+}
+func (r *recordingMonitor) View() string { return "" }

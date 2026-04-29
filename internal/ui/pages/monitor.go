@@ -114,6 +114,13 @@ type monitorInstancesRefreshedMsg struct {
 	insts []domain.RunningInstance
 }
 
+// monitorSelectPIDInternalMsg moves the table cursor to the row whose PID
+// matches. Emitted by MonitorPage itself after a refresh, in response to
+// the public MonitorSelectPIDMsg.
+type monitorSelectPIDInternalMsg struct {
+	pid int
+}
+
 func (p *MonitorPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 	switch m := msg.(type) {
@@ -141,6 +148,14 @@ func (p *MonitorPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if c := p.applyInstances(m.insts); c != nil {
 			cmds = append(cmds, c)
 		}
+	case MonitorSelectPIDMsg:
+		// Refresh first (in case the new instance is not yet in subs/rows),
+		// then queue an internal selection step.
+		cmds = append(cmds, p.refreshInstancesCmd(), func() tea.Msg {
+			return monitorSelectPIDInternalMsg{pid: m.PID}
+		})
+	case monitorSelectPIDInternalMsg:
+		p.selectRow(m.pid)
 	case monitorEventMsg:
 		st, ok := p.subs[m.ev.PID]
 		if ok {
@@ -272,6 +287,19 @@ func (p *MonitorPage) View() string {
 		}
 	}
 	return top + "\n\n" + bottom
+}
+
+// selectRow positions the table cursor on the row matching pid (no-op if not found).
+func (p *MonitorPage) selectRow(pid int) {
+	rows := p.tbl.Rows()
+	for i, r := range rows {
+		var rowPID int
+		_, _ = fmt.Sscanf(r[0], "%d", &rowPID)
+		if rowPID == pid {
+			p.tbl.SetCursor(i)
+			return
+		}
+	}
 }
 
 // selectedPID returns the PID of the currently selected row, or 0 if no rows.
