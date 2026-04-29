@@ -58,6 +58,7 @@ type RootModel struct {
 	width       int
 	height      int
 	bootBlocker *bootBlocker
+	helpOpen    bool
 }
 
 // NewRoot constructs a RootModel with placeholder pages.
@@ -175,6 +176,21 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case tea.KeyMsg:
+		// Help toggle is global and pre-empts page routing.
+		if m.helpOpen {
+			switch msg.String() {
+			case "?", "esc":
+				m.helpOpen = false
+				return m, nil
+			case "ctrl+c", "q":
+				return m, tea.Quit
+			}
+			return m, nil // swallow everything else while help is open
+		}
+		if msg.String() == "?" {
+			m.helpOpen = true
+			return m, nil
+		}
 		switch msg.String() {
 		case "ctrl+c", "q":
 			return m, tea.Quit
@@ -208,6 +224,13 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m RootModel) View() string {
 	if m.bootBlocker != nil {
 		return components.Modal(m.bootBlocker.title, m.bootBlocker.body+"\n\nPress q to quit.", m.width, m.height)
+	}
+	if m.helpOpen {
+		body, err := components.RenderHelp(m.width - 8) // padding
+		if err != nil {
+			body = components.HelpMarkdown // fallback raw
+		}
+		return components.Modal("Keybindings", body, m.width, m.height)
 	}
 	header := m.renderTabs()
 	body := m.pages[m.active].View()

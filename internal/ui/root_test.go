@@ -158,6 +158,47 @@ func TestRoot_BootBlockerSwallowsKeysExceptQuit(t *testing.T) {
 	}
 }
 
+func TestRoot_HelpToggle(t *testing.T) {
+	r := NewRoot(TabProfiles).
+		WithProfilesPage(pages.Placeholder{TabName: "P"}).
+		WithLauncherPage(pages.Placeholder{TabName: "L"}).
+		WithMonitorPage(pages.Placeholder{TabName: "Mo"}).
+		WithModelsPage(pages.Placeholder{TabName: "Md"})
+	// Help closed by default.
+	if rendered := r.View(); strings.Contains(rendered, "Keybindings") {
+		t.Error("help is open before any keypress")
+	}
+	// Press ?
+	updated, _ := r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+	rm := updated.(RootModel)
+	if rendered := rm.View(); !strings.Contains(rendered, "Keybindings") {
+		t.Errorf("help did not open after ?; view:\n%s", rendered)
+	}
+	// Press Esc
+	updated, _ = rm.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	rm = updated.(RootModel)
+	if rendered := rm.View(); strings.Contains(rendered, "Keybindings") {
+		t.Errorf("help did not close on Esc; view:\n%s", rendered)
+	}
+}
+
+func TestRoot_HelpSwallowsTabSwitch(t *testing.T) {
+	r := NewRoot(TabProfiles).
+		WithProfilesPage(pages.Placeholder{TabName: "P"}).
+		WithLauncherPage(pages.Placeholder{TabName: "L"}).
+		WithMonitorPage(pages.Placeholder{TabName: "Mo"}).
+		WithModelsPage(pages.Placeholder{TabName: "Md"})
+	// Open help.
+	updated, _ := r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+	rm := updated.(RootModel)
+	// Press 2 — should NOT switch tab while help is open.
+	updated, _ = rm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'2'}})
+	rm = updated.(RootModel)
+	if rm.active != TabProfiles {
+		t.Errorf("active = %v; want still TabProfiles", rm.active)
+	}
+}
+
 type recordingMonitor struct {
 	lastSelectPID int
 }
