@@ -78,6 +78,23 @@ func TestManager_LaunchBackground_WaitsHealthyAndPersists(t *testing.T) {
 	}
 }
 
+func TestManager_Launch_ModelMissing(t *testing.T) {
+	mgr, _ := newTestManager(t)
+	port := freePort(t)
+	p := domain.Profile{
+		ID:    "missing",
+		Model: "/nonexistent/path/to/model.gguf",
+		Args:  map[string]any{"port": float64(port)},
+	}
+	_, err := mgr.Launch(p, LaunchBackground)
+	if err == nil {
+		t.Fatal("expected ErrModelNotFound, got nil")
+	}
+	if !errors.Is(err, ErrModelNotFound) {
+		t.Fatalf("err = %v, want ErrModelNotFound", err)
+	}
+}
+
 func TestManager_LaunchBackground_PortBusy(t *testing.T) {
 	mgr, _ := newTestManager(t)
 
@@ -184,6 +201,17 @@ func TestTailLogs_UnknownPID(t *testing.T) {
 	mgr, _ := newTestManager(t)
 	if _, err := mgr.TailLogs(999_999); !errors.Is(err, ErrUnknownPID) {
 		t.Fatalf("err = %v, want ErrUnknownPID", err)
+	}
+}
+
+func TestManager_New_BinaryNotInPATH(t *testing.T) {
+	cfg := Config{Binary: "this-bin-does-not-exist-xyz", LogDir: t.TempDir(), RegistryPath: filepath.Join(t.TempDir(), "i.json")}
+	_, err := NewWithCheck(cfg)
+	if err == nil {
+		t.Fatal("expected error for missing binary, got nil")
+	}
+	if !errors.Is(err, ErrBinaryNotFound) {
+		t.Fatalf("err = %v, want ErrBinaryNotFound", err)
 	}
 }
 

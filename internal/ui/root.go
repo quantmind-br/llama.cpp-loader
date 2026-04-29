@@ -44,13 +44,21 @@ type Page interface {
 	View() string
 }
 
+// bootBlocker carrega o conteúdo de um modal bloqueante exibido sobre toda a UI.
+type bootBlocker struct {
+	title string
+	body  string
+}
+
 // RootModel is the top-level tea.Model.
 type RootModel struct {
-	pages   [4]tea.Model
-	active  Tab
-	status  components.StatusBar
-	width   int
-	height  int
+	pages       [4]tea.Model
+	active      Tab
+	status      components.StatusBar
+	width       int
+	height      int
+	bootBlocker *bootBlocker
+	helpOpen    bool
 }
 
 // NewRoot constructs a RootModel with placeholder pages.
@@ -100,6 +108,14 @@ func (m RootModel) WithStatusWarn(msg string) RootModel {
 	return m
 }
 
+// WithBootBlocker mostra um modal bloqueante sobre toda a UI. Usado quando
+// algum recurso crítico falta na boot (e.g. llama-server fora do PATH).
+// Apenas `q` / `ctrl+c` continuam respondendo enquanto o blocker está ativo.
+func (m RootModel) WithBootBlocker(title, body string) RootModel {
+	m.bootBlocker = &bootBlocker{title: title, body: body}
+	return m
+}
+
 func (m RootModel) Init() tea.Cmd {
 	cmds := make([]tea.Cmd, 0, len(m.pages))
 	for _, p := range m.pages {
@@ -111,6 +127,17 @@ func (m RootModel) Init() tea.Cmd {
 }
 
 func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if m.bootBlocker != nil {
+		if k, ok := msg.(tea.KeyMsg); ok {
+			if k.Type == tea.KeyCtrlC || (k.Type == tea.KeyRunes && len(k.Runes) == 1 && k.Runes[0] == 'q') {
+				return m, tea.Quit
+			}
+		}
+		if w, ok := msg.(tea.WindowSizeMsg); ok {
+			m.width, m.height = w.Width, w.Height
+		}
+		return m, nil
+	}
 	switch msg := msg.(type) {
 	case pages.LauncherProfilesLoadedMsg:
 		updated, cmd := m.pages[TabLauncher].Update(msg)
@@ -127,7 +154,10 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case pages.SwitchToMonitorMsg:
 		m.active = TabMonitor
-		return m, nil
+		// Forward the PID so MonitorPage can refresh + select that row.
+		updated, cmd := m.pages[TabMonitor].Update(pages.MonitorSelectPIDMsg{PID: msg.PID})
+		m.pages[TabMonitor] = updated
+		return m, cmd
 
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
@@ -146,6 +176,21 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case tea.KeyMsg:
+		// Help toggle is global and pre-empts page routing.
+		if m.helpOpen {
+			switch msg.String() {
+			case "?", "esc":
+				m.helpOpen = false
+				return m, nil
+			case "ctrl+c", "q":
+				return m, tea.Quit
+			}
+			return m, nil // swallow everything else while help is open
+		}
+		if msg.String() == "?" {
+			m.helpOpen = true
+			return m, nil
+		}
 		switch msg.String() {
 		case "ctrl+c", "q":
 			return m, tea.Quit
@@ -177,6 +222,16 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m RootModel) View() string {
+	if m.bootBlocker != nil {
+		return components.Modal(m.bootBlocker.title, m.bootBlocker.body+"\n\nPress q to quit.", m.width, m.height)
+	}
+	if m.helpOpen {
+		body, err := components.RenderHelp(m.width - 8) // padding
+		if err != nil {
+			body = components.HelpMarkdown // fallback raw
+		}
+		return components.Modal("Keybindings", body, m.width, m.height)
+	}
 	header := m.renderTabs()
 	body := m.pages[m.active].View()
 	status := m.status.Render(m.width)

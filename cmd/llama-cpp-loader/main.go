@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -38,11 +39,27 @@ func main() {
 	schema, schemaWarn := loadSchema()
 	scanner := modelscanner.New()
 
-	mgr := processmgr.New(processmgr.Config{
+	mgr, err := processmgr.NewWithCheck(processmgr.Config{
+		Binary:       "llama-server",
 		LogDir:       cfg.Paths.LogDir,
 		RegistryPath: filepath.Join(cfg.Paths.StateDir, "instances.json"),
 		LastUsedSink: store,
 	})
+	if err != nil {
+		if errors.Is(err, processmgr.ErrBinaryNotFound) {
+			root := ui.NewRoot(ui.TabProfiles).WithBootBlocker(
+				"llama-server not found in PATH",
+				"Install llama.cpp first:\n  Arch: pacman -S llama.cpp-cuda\n  Other distros: build from https://github.com/ggml-org/llama.cpp",
+			)
+			if _, runErr := tea.NewProgram(root, tea.WithAltScreen()).Run(); runErr != nil {
+				fmt.Fprintf(os.Stderr, "tui error: %v\n", runErr)
+			}
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stderr, "process manager: %v\n", err)
+		os.Exit(1)
+	}
+	defer mgr.Close()
 	if err := mgr.Reconcile(); err != nil {
 		fmt.Fprintf(os.Stderr, "instance recovery: %v\n", err)
 	}
@@ -55,7 +72,7 @@ func main() {
 	launcherPage := pages.NewLauncherPage(store, mgr, val).SetSchema(schema)
 
 	mon := monitor.New(monitor.Config{NvidiaSMIPath: "nvidia-smi"})
-	monitorPage := pages.NewMonitorPage(mgr, mon)
+	monitorPage := pages.NewMonitorPage(mgr, mon, store)
 
 	root := ui.NewRoot(parseTab(cfg.UI.DefaultTab)).
 		WithProfilesPage(profilesPage).

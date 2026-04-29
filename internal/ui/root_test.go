@@ -114,3 +114,100 @@ func TestRoot_RoutesSwitchToMonitorMsg(t *testing.T) {
 		t.Fatalf("active = %d, want TabMonitor=%d", r.active, TabMonitor)
 	}
 }
+
+func TestRoot_ForwardsSwitchPIDToMonitor(t *testing.T) {
+	rec := &recordingMonitor{}
+	r := NewRoot(TabProfiles).
+		WithProfilesPage(pages.Placeholder{TabName: "P"}).
+		WithLauncherPage(pages.Placeholder{TabName: "L"}).
+		WithMonitorPage(rec).
+		WithModelsPage(pages.Placeholder{TabName: "M"})
+	updated, _ := r.Update(pages.SwitchToMonitorMsg{PID: 4321})
+	rm := updated.(RootModel)
+	if rm.active != TabMonitor {
+		t.Errorf("active = %v, want TabMonitor", rm.active)
+	}
+	if rec.lastSelectPID != 4321 {
+		t.Errorf("rec.lastSelectPID = %d, want 4321", rec.lastSelectPID)
+	}
+}
+
+func TestRoot_BootBlockerRendersModal(t *testing.T) {
+	r := NewRoot(TabProfiles).WithBootBlocker("llama-server not found", "Install with: pacman -S llama.cpp-cuda")
+	view := r.View()
+	if !strings.Contains(view, "llama-server not found") {
+		t.Errorf("missing title in view")
+	}
+	if !strings.Contains(view, "pacman -S") {
+		t.Errorf("missing install hint in view")
+	}
+}
+
+func TestRoot_BootBlockerSwallowsKeysExceptQuit(t *testing.T) {
+	r := NewRoot(TabProfiles).WithBootBlocker("err", "fix")
+	// Pressing 1 (tab switch) should NOT change active tab.
+	updated, _ := r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'1'}})
+	rm := updated.(RootModel)
+	if rm.active != TabProfiles {
+		t.Errorf("active changed despite blocker; got %v", rm.active)
+	}
+	// Pressing q must still quit (tea.Quit cmd).
+	_, cmd := r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	if cmd == nil {
+		t.Errorf("q must still produce tea.Quit when blocker is open")
+	}
+}
+
+func TestRoot_HelpToggle(t *testing.T) {
+	r := NewRoot(TabProfiles).
+		WithProfilesPage(pages.Placeholder{TabName: "P"}).
+		WithLauncherPage(pages.Placeholder{TabName: "L"}).
+		WithMonitorPage(pages.Placeholder{TabName: "Mo"}).
+		WithModelsPage(pages.Placeholder{TabName: "Md"})
+	// Help closed by default.
+	if rendered := r.View(); strings.Contains(rendered, "Keybindings") {
+		t.Error("help is open before any keypress")
+	}
+	// Press ?
+	updated, _ := r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+	rm := updated.(RootModel)
+	if rendered := rm.View(); !strings.Contains(rendered, "Keybindings") {
+		t.Errorf("help did not open after ?; view:\n%s", rendered)
+	}
+	// Press Esc
+	updated, _ = rm.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	rm = updated.(RootModel)
+	if rendered := rm.View(); strings.Contains(rendered, "Keybindings") {
+		t.Errorf("help did not close on Esc; view:\n%s", rendered)
+	}
+}
+
+func TestRoot_HelpSwallowsTabSwitch(t *testing.T) {
+	r := NewRoot(TabProfiles).
+		WithProfilesPage(pages.Placeholder{TabName: "P"}).
+		WithLauncherPage(pages.Placeholder{TabName: "L"}).
+		WithMonitorPage(pages.Placeholder{TabName: "Mo"}).
+		WithModelsPage(pages.Placeholder{TabName: "Md"})
+	// Open help.
+	updated, _ := r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+	rm := updated.(RootModel)
+	// Press 2 — should NOT switch tab while help is open.
+	updated, _ = rm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'2'}})
+	rm = updated.(RootModel)
+	if rm.active != TabProfiles {
+		t.Errorf("active = %v; want still TabProfiles", rm.active)
+	}
+}
+
+type recordingMonitor struct {
+	lastSelectPID int
+}
+
+func (r *recordingMonitor) Init() tea.Cmd { return nil }
+func (r *recordingMonitor) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if m, ok := msg.(pages.MonitorSelectPIDMsg); ok {
+		r.lastSelectPID = m.PID
+	}
+	return r, nil
+}
+func (r *recordingMonitor) View() string { return "" }

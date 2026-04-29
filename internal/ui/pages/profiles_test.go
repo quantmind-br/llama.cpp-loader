@@ -139,6 +139,53 @@ func TestProfilesPage_PickerWritesDraftModel(t *testing.T) {
 	}
 }
 
+func TestProfilesPage_RendersCorruptMarker(t *testing.T) {
+	store := newFakeStoreWithDiagnostics(
+		[]domain.Profile{{ID: "ok", Name: "Ok"}},
+		[]profilestore.ListDiagnostic{{ID: "broken", Err: profilestore.ErrInvalidJSON}},
+	)
+	p := NewProfilesPage(store, domain.FlagSchema{})
+	// Seed a window size so the list has room to render.
+	model, _ := p.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	p = model.(ProfilesPage)
+
+	loaded := p.loadCmd()()
+	model, _ = p.Update(loaded)
+	page := model.(ProfilesPage)
+
+	out := page.View()
+	if !strings.Contains(out, "broken") || !strings.Contains(out, "⚠") {
+		t.Fatalf("view missing corrupt marker; got:\n%s", out)
+	}
+}
+
+type fakeStoreWithDiag struct {
+	ps    []domain.Profile
+	diags []profilestore.ListDiagnostic
+}
+
+func newFakeStoreWithDiagnostics(ps []domain.Profile, diags []profilestore.ListDiagnostic) *fakeStoreWithDiag {
+	return &fakeStoreWithDiag{ps: ps, diags: diags}
+}
+
+func (f *fakeStoreWithDiag) List() ([]domain.Profile, error) { return f.ps, nil }
+func (f *fakeStoreWithDiag) ListWithDiagnostics() ([]domain.Profile, []profilestore.ListDiagnostic, error) {
+	return f.ps, f.diags, nil
+}
+func (f *fakeStoreWithDiag) Get(id string) (domain.Profile, error) {
+	for _, p := range f.ps {
+		if p.ID == id {
+			return p, nil
+		}
+	}
+	return domain.Profile{}, profilestore.ErrNotFound
+}
+func (f *fakeStoreWithDiag) Save(_ domain.Profile) error { return nil }
+func (f *fakeStoreWithDiag) Delete(_ string) error       { return nil }
+func (f *fakeStoreWithDiag) Duplicate(_, _ string) (domain.Profile, error) {
+	return domain.Profile{}, nil
+}
+
 func TestProfilesPage_UseInNewProfilePrefillsDraft(t *testing.T) {
 	dir := t.TempDir()
 	store, err := profilestore.NewFSStore(dir)
@@ -158,5 +205,32 @@ func TestProfilesPage_UseInNewProfilePrefillsDraft(t *testing.T) {
 	}
 	if !page.draft.isNew {
 		t.Errorf("isNew = false, want true")
+	}
+}
+
+func TestProfilesPage_FooterMentionsHelp(t *testing.T) {
+	dir := t.TempDir()
+	store, err := profilestore.NewFSStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(domain.Profile{
+		ID:    "demo",
+		Name:  "Demo",
+		Model: "/m.gguf",
+		Args:  map[string]any{"port": float64(8080)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	page := NewProfilesPage(store, domain.FlagSchema{})
+	updated, _ := page.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	page = updated.(ProfilesPage)
+	updated, _ = page.Update(loadedMsg{profiles: []domain.Profile{{
+		ID: "demo", Name: "Demo", Model: "/m.gguf",
+		Args: map[string]any{"port": float64(8080)},
+	}}})
+	page = updated.(ProfilesPage)
+	if !strings.Contains(page.View(), "[?] help") {
+		t.Errorf("profiles footer missing [?] help; got:\n%s", page.View())
 	}
 }

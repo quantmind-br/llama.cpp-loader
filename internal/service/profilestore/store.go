@@ -7,9 +7,18 @@ import (
 	"github.com/quantmind-br/llama-cpp-loader/internal/domain"
 )
 
+// ListDiagnostic descreve uma entry de profile que falhou ao carregar.
+// Usado pela UI para marcar profiles corruptos com ⚠ e excluí-los das
+// operações de launch.
+type ListDiagnostic struct {
+	ID  string
+	Err error
+}
+
 // Store is the interface for profile persistence.
 type Store interface {
 	List() ([]domain.Profile, error)
+	ListWithDiagnostics() ([]domain.Profile, []ListDiagnostic, error)
 	Get(id string) (domain.Profile, error)
 	Save(p domain.Profile) error
 	Delete(id string) error
@@ -18,8 +27,8 @@ type Store interface {
 
 // Sentinel errors returned by Store implementations.
 var (
-	ErrNotFound     = errors.New("profile not found")
-	ErrInvalidJSON  = errors.New("profile json is invalid")
-	ErrDuplicateID  = errors.New("profile id already exists")
-	ErrInvalidID    = errors.New("profile id is invalid")
+	ErrNotFound    = errors.New("profile not found")
+	ErrInvalidJSON = errors.New("profile json is invalid")
+	ErrDuplicateID = errors.New("profile id already exists")
+	ErrInvalidID   = errors.New("profile id is invalid")
 )

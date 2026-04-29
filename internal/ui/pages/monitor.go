@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
@@ -13,6 +14,7 @@ import (
 	"github.com/quantmind-br/llama-cpp-loader/internal/service/monitor"
 	"github.com/quantmind-br/llama-cpp-loader/internal/service/processmgr"
 	"github.com/quantmind-br/llama-cpp-loader/internal/ui/components"
+	"github.com/quantmind-br/llama-cpp-loader/internal/ui/theme"
 )
 
 // SubViewKind selects which bottom region the MonitorPage renders.
@@ -49,6 +51,12 @@ type procMgrIface interface {
 	TailLogs(pid int) (io.ReadCloser, error)
 }
 
+// profileStoreIface é o subset de profilestore.Store usado pela MonitorPage
+// para implementar `r` (restart real). nil -> `r` cai em modo kill-only.
+type profileStoreIface interface {
+	Get(id string) (domain.Profile, error)
+}
+
 // subState holds per-instance subscription state. Fields populated by later
 // tasks (T12-T14); skeleton tracks just the cancel func.
 type subState struct {
@@ -61,18 +69,26 @@ type subState struct {
 }
 
 type MonitorPage struct {
-	pm      procMgrIface
-	mm      monitor.Manager
-	tbl     table.Model
-	subs    map[int]*subState
-	chans   map[int]<-chan monitor.MonitorEvent
-	subView SubViewKind
-	paused  bool
-	width   int
-	height  int
+	pm                 procMgrIface
+	mm                 monitor.Manager
+	ps                 profileStoreIface // injected for `r` real restart (slice 6 / Task 4)
+	pendingSelectPID   int               // set by MonitorSelectPIDMsg, consumed after the next refresh
+	tbl                table.Model
+	subs               map[int]*subState
+	chans              map[int]<-chan monitor.MonitorEvent
+	subView            SubViewKind
+	paused             bool
+	periodicTickActive bool
+	width              int
+	height             int
 }
 
-func NewMonitorPage(pm procMgrIface, mm monitor.Manager) *MonitorPage {
+// monitorPeriodicTickMsg is delivered every 2s by Init/periodicTickCmd to drive
+// background refreshes of the instance list, so crashes detected by the
+// processmgr liveness goroutine surface in the UI without user interaction.
+type monitorPeriodicTickMsg struct{}
+
+func NewMonitorPage(pm procMgrIface, mm monitor.Manager, ps profileStoreIface) *MonitorPage {
 	cols := []table.Column{
 		{Title: "PID", Width: 8},
 		{Title: "Port", Width: 6},
@@ -85,6 +101,7 @@ func NewMonitorPage(pm procMgrIface, mm monitor.Manager) *MonitorPage {
 	return &MonitorPage{
 		pm:    pm,
 		mm:    mm,
+		ps:    ps,
 		tbl:   t,
 		subs:  map[int]*subState{},
 		chans: map[int]<-chan monitor.MonitorEvent{},
@@ -96,14 +113,63 @@ func (p *MonitorPage) SetSize(w, h int) {
 	p.tbl.SetWidth(w)
 }
 
-func (p *MonitorPage) Init() tea.Cmd { return p.refreshInstancesCmd() }
+func (p *MonitorPage) Init() tea.Cmd {
+	p.periodicTickActive = true
+	return tea.Batch(p.refreshInstancesCmd(), p.periodicTickCmd())
+}
 
 func (p *MonitorPage) refreshInstancesCmd() tea.Cmd {
 	return func() tea.Msg { return monitorInstancesRefreshedMsg{insts: p.pm.List()} }
 }
 
+func (p *MonitorPage) periodicTickCmd() tea.Cmd {
+	return tea.Tick(2*time.Second, func(_ time.Time) tea.Msg { return monitorPeriodicTickMsg{} })
+}
+
 type monitorInstancesRefreshedMsg struct {
 	insts []domain.RunningInstance
+}
+
+// restartCmd kills the instance with pid and relaunches the same profile,
+// mirroring the prior Background flag (so a foreground inst stays foreground
+// and a background inst stays background). Falls back to plain refresh when
+// ps is nil (no store wired) or when ps.Get returns an error. On any error,
+// the command emits a no-op msg; UI surfaces the error via the next
+// instance refresh.
+func (p *MonitorPage) restartCmd(pid int) tea.Cmd {
+	insts := p.pm.List()
+	var inst *domain.RunningInstance
+	for i := range insts {
+		if insts[i].PID == pid {
+			inst = &insts[i]
+			break
+		}
+	}
+	if inst == nil {
+		return p.refreshInstancesCmd()
+	}
+	pm := p.pm
+	ps := p.ps
+	profileID := inst.ProfileID
+	bg := inst.Background
+	return tea.Batch(
+		func() tea.Msg {
+			_ = pm.Kill(pid)
+			if ps == nil {
+				return monitorInstancesRefreshedMsg{insts: pm.List()}
+			}
+			prof, err := ps.Get(profileID)
+			if err != nil {
+				return monitorInstancesRefreshedMsg{insts: pm.List()}
+			}
+			mode := processmgr.LaunchBackground
+			if !bg {
+				mode = processmgr.LaunchForeground
+			}
+			_, _ = pm.Launch(prof, mode)
+			return monitorInstancesRefreshedMsg{insts: pm.List()}
+		},
+	)
 }
 
 func (p *MonitorPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -121,10 +187,8 @@ func (p *MonitorPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, p.refreshInstancesCmd())
 			}
 		case m.Type == tea.KeyRunes && len(m.Runes) == 1 && m.Runes[0] == 'r':
-			// Slice-5: r==kill (real restart needs ProfileStore — deferred to slice 6).
 			if pid := p.selectedPID(); pid > 0 {
-				_ = p.pm.Kill(pid)
-				cmds = append(cmds, p.refreshInstancesCmd())
+				cmds = append(cmds, p.restartCmd(pid))
 			}
 		case m.Type == tea.KeySpace:
 			p.paused = !p.paused
@@ -133,6 +197,17 @@ func (p *MonitorPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if c := p.applyInstances(m.insts); c != nil {
 			cmds = append(cmds, c)
 		}
+		if p.pendingSelectPID != 0 {
+			p.selectRow(p.pendingSelectPID)
+			p.pendingSelectPID = 0
+		}
+	case MonitorSelectPIDMsg:
+		// Defer the cursor move until the next refresh has applied fresh rows,
+		// so we never select against a stale row list.
+		p.pendingSelectPID = m.PID
+		cmds = append(cmds, p.refreshInstancesCmd())
+	case monitorPeriodicTickMsg:
+		cmds = append(cmds, p.refreshInstancesCmd(), p.periodicTickCmd())
 	case monitorEventMsg:
 		st, ok := p.subs[m.ev.PID]
 		if ok {
@@ -180,18 +255,27 @@ func (p *MonitorPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (p *MonitorPage) applyInstances(insts []domain.RunningInstance) tea.Cmd {
 	rows := make([]table.Row, 0, len(insts))
 	for _, ri := range insts {
+		pidCol := fmt.Sprintf("%d", ri.PID)
+		profileCol := ri.ProfileID
+		if ri.Crashed {
+			pidCol = "✗ " + pidCol
+			profileCol = ri.ProfileID + " (crashed)"
+		}
 		rows = append(rows, table.Row{
-			fmt.Sprintf("%d", ri.PID),
+			pidCol,
 			fmt.Sprintf("%d", ri.Port),
-			ri.ProfileID,
+			profileCol,
 			"--", "--", "--",
 		})
 	}
 	p.tbl.SetRows(rows)
 
-	// Add subs for new instances; collect listenCmds.
+	// Add subs for new (non-crashed) instances; collect listenCmds.
 	var cmds []tea.Cmd
 	for _, ri := range insts {
+		if ri.Crashed {
+			continue
+		}
 		if _, ok := p.subs[ri.PID]; ok {
 			continue
 		}
@@ -203,14 +287,24 @@ func (p *MonitorPage) applyInstances(insts []domain.RunningInstance) tea.Cmd {
 		p.chans[ri.PID] = ch
 		cmds = append(cmds, listenCmd(ch))
 	}
-	// Cancel orphan subs.
+	// Cancel subs for crashed insts (data sources are dead) and for orphans
+	// (PID no longer in the list at all). Async cancel preserves UI thread.
 	seen := make(map[int]bool, len(insts))
 	for _, ri := range insts {
 		seen[ri.PID] = true
+		if ri.Crashed {
+			if st, ok := p.subs[ri.PID]; ok {
+				cancel := st.cancel
+				go func() { _ = cancel() }()
+				delete(p.subs, ri.PID)
+				delete(p.chans, ri.PID)
+			}
+		}
 	}
 	for pid, st := range p.subs {
 		if !seen[pid] {
-			_ = st.cancel()
+			cancel := st.cancel
+			go func() { _ = cancel() }() // do not block UI on subscription teardown
 			delete(p.subs, pid)
 			delete(p.chans, pid)
 		}
@@ -219,9 +313,12 @@ func (p *MonitorPage) applyInstances(insts []domain.RunningInstance) tea.Cmd {
 }
 
 func (p *MonitorPage) View() string {
+	footer := theme.Subtitle.Render(
+		"[Tab] cycle view  [Space] pause  [k] kill  [r] restart  [?] help",
+	)
 	header := lipgloss.NewStyle().Bold(true).Render("Running instances")
 	if len(p.tbl.Rows()) == 0 {
-		return header + "\n  (none)"
+		return header + "\n  (none)\n\n" + footer
 	}
 	top := header + "\n" + p.tbl.View()
 	pid := p.selectedPID()
@@ -249,6 +346,10 @@ func (p *MonitorPage) View() string {
 				bottom = "(no slot data yet)"
 			}
 		case SubViewMetrics:
+			if len(st.mets.TokensPerSec) == 0 && len(st.mets.RequestsPerSec) == 0 {
+				bottom = "(no metrics yet — first sample arrives after the slots tick)"
+				break
+			}
 			var b strings.Builder
 			fmt.Fprintf(&b, "tokens/s: %s\n", components.Sparkline(st.mets.TokensPerSec, 40))
 			fmt.Fprintf(&b, "req/s   : %s\n", components.Sparkline(st.mets.RequestsPerSec, 40))
@@ -258,7 +359,21 @@ func (p *MonitorPage) View() string {
 			bottom = b.String()
 		}
 	}
-	return top + "\n\n" + bottom
+	return top + "\n\n" + bottom + "\n\n" + footer
+}
+
+// selectRow positions the table cursor on the row matching pid (no-op if not found).
+func (p *MonitorPage) selectRow(pid int) {
+	rows := p.tbl.Rows()
+	for i, r := range rows {
+		pidCol := strings.TrimPrefix(r[0], "✗ ")
+		var rowPID int
+		_, _ = fmt.Sscanf(pidCol, "%d", &rowPID)
+		if rowPID == pid {
+			p.tbl.SetCursor(i)
+			return
+		}
+	}
 }
 
 // selectedPID returns the PID of the currently selected row, or 0 if no rows.
@@ -267,7 +382,8 @@ func (p *MonitorPage) selectedPID() int {
 		return 0
 	}
 	row := p.tbl.SelectedRow()
+	pidCol := strings.TrimPrefix(row[0], "✗ ")
 	var pid int
-	_, _ = fmt.Sscanf(row[0], "%d", &pid)
+	_, _ = fmt.Sscanf(pidCol, "%d", &pid)
 	return pid
 }

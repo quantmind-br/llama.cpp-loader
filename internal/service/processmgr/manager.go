@@ -1,8 +1,10 @@
 package processmgr
 
 import (
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"os"
@@ -23,9 +25,10 @@ type fsManager struct {
 	registryPath string // absolute path to instances.json
 	sink         LastUsedSink
 
-	mu      sync.Mutex
-	tracked map[int]domain.RunningInstance // pid -> instance
-	fgPID   int                            // 0 if no foreground active; -1 if launching
+	mu           sync.Mutex
+	tracked      map[int]domain.RunningInstance // pid -> instance
+	fgPID        int                            // 0 if no foreground active; -1 if launching
+	livenessStop func()
 }
 
 // Config holds wiring for New. Caller owns the paths; the manager creates
@@ -44,19 +47,52 @@ func New(cfg Config) *fsManager {
 	if bin == "" {
 		bin = "llama-server"
 	}
-	return &fsManager{
+	m := &fsManager{
 		binary:       bin,
 		logDir:       cfg.LogDir,
 		registryPath: cfg.RegistryPath,
 		sink:         cfg.LastUsedSink,
 		tracked:      map[int]domain.RunningInstance{},
 	}
+	m.livenessStop = m.startLiveness()
+	return m
+}
+
+// Close stops the liveness ticker. Idempotent.
+func (m *fsManager) Close() error {
+	if m.livenessStop != nil {
+		m.livenessStop()
+	}
+	return nil
+}
+
+// NewWithCheck é como New, mas verifica via exec.LookPath se o binário existe
+// antes de retornar. Erro: ErrBinaryNotFound (com o nome buscado embutido).
+// Use em main.go para bootear com fail-fast e modal de instalação.
+func NewWithCheck(cfg Config) (*fsManager, error) {
+	bin := cfg.Binary
+	if bin == "" {
+		bin = "llama-server"
+	}
+	if _, err := exec.LookPath(bin); err != nil {
+		return nil, fmt.Errorf("%w: %s", ErrBinaryNotFound, bin)
+	}
+	return New(cfg), nil
 }
 
 // Launch spawns llama-server with the args derived from p. mode chooses
 // between background (detached, log-to-file) and foreground (stdout/stderr
 // inherit; only one allowed at a time — covered in Task 6).
 func (m *fsManager) Launch(p domain.Profile, mode LaunchMode) (domain.RunningInstance, error) {
+	if p.Model == "" {
+		return domain.RunningInstance{}, ErrModelNotFound
+	}
+	if _, err := os.Stat(p.Model); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return domain.RunningInstance{}, fmt.Errorf("%w: %s", ErrModelNotFound, p.Model)
+		}
+		return domain.RunningInstance{}, fmt.Errorf("stat model: %w", err)
+	}
 	port, ok := portFromProfile(p)
 	if !ok {
 		return domain.RunningInstance{}, fmt.Errorf("profile %q: missing or invalid port arg", p.ID)

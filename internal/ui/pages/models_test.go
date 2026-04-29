@@ -2,6 +2,7 @@ package pages
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -151,5 +152,12 @@ func TestModelsPage_RescanDropsStaleEvents(t *testing.T) {
 	}
 	if mp.files[0].Name != "fresh.gguf" {
 		t.Errorf("got %q, want fresh.gguf", mp.files[0].Name)
+	}
+}
+
+func TestModelsPage_FooterMentionsHelp(t *testing.T) {
+	page := NewModelsPage(&fakeScanner{}, nil)
+	if !strings.Contains(page.View(), "[?] help") {
+		t.Errorf("models footer missing [?] help; got:\n%s", page.View())
 	}
 }

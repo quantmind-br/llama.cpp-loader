@@ -6,3 +6,10 @@ package pages
 type SwitchToMonitorMsg struct {
 	PID int
 }
+
+// MonitorSelectPIDMsg instructs MonitorPage to select the row whose PID
+// matches. Sent by root when handling SwitchToMonitorMsg so the Monitor
+// page lands focused on the newly-launched instance.
+type MonitorSelectPIDMsg struct {
+	PID int
+}

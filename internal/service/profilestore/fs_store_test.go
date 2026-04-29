@@ -100,6 +100,32 @@ func TestFSStore_List_SkipsCorrupt(t *testing.T) {
 	}
 }
 
+func TestFSStore_ListWithDiagnostics_ReportsCorrupt(t *testing.T) {
+	s, dir := newStore(t)
+	if err := s.Save(sampleProfile("good", "Good")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "bad.json"), []byte("{not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	profiles, diags, err := s.ListWithDiagnostics()
+	if err != nil {
+		t.Fatalf("ListWithDiagnostics: %v", err)
+	}
+	if len(profiles) != 1 || profiles[0].ID != "good" {
+		t.Fatalf("profiles = %+v, want exactly one good", profiles)
+	}
+	if len(diags) != 1 {
+		t.Fatalf("diags = %d, want 1", len(diags))
+	}
+	if diags[0].ID != "bad" {
+		t.Errorf("diags[0].ID = %q, want bad", diags[0].ID)
+	}
+	if !errors.Is(diags[0].Err, ErrInvalidJSON) {
+		t.Errorf("diags[0].Err = %v, want ErrInvalidJSON", diags[0].Err)
+	}
+}
+
 func TestFSStore_Delete(t *testing.T) {
 	s, _ := newStore(t)
 	if err := s.Save(sampleProfile("x", "X")); err != nil {

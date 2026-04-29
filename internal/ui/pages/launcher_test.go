@@ -1,6 +1,7 @@
 package pages
 
 import (
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -56,10 +57,11 @@ func (f *fakeManager) Launch(p domain.Profile, mode processmgr.LaunchMode) (doma
 	f.mode = mode
 	return domain.RunningInstance{ProfileID: p.ID, PID: 4242, Port: 8080, Background: mode == processmgr.LaunchBackground}, nil
 }
-func (f *fakeManager) Kill(pid int) error                             { return nil }
-func (f *fakeManager) List() []domain.RunningInstance                 { return nil }
-func (f *fakeManager) WaitHealthy(_, _ int, _ time.Duration) error    { return nil }
-func (f *fakeManager) TailLogs(_ int) (io.ReadCloser, error)          { return nil, processmgr.ErrUnknownPID }
+func (f *fakeManager) Kill(pid int) error                          { return nil }
+func (f *fakeManager) List() []domain.RunningInstance              { return nil }
+func (f *fakeManager) WaitHealthy(_, _ int, _ time.Duration) error { return nil }
+func (f *fakeManager) TailLogs(_ int) (io.ReadCloser, error)       { return nil, processmgr.ErrUnknownPID }
+func (f *fakeManager) Close() error                                { return nil }
 
 func TestLauncherPage_EnterLaunchesSelected(t *testing.T) {
 	dir := t.TempDir()
@@ -193,6 +195,45 @@ func TestLauncherPage_RefreshReloadsProfiles(t *testing.T) {
 	}
 }
 
+func TestLauncherPage_PortBusyHint(t *testing.T) {
+	page := NewLauncherPage(nil, nil, nil)
+	wrapped := fmt.Errorf("port 8080: %w", processmgr.ErrPortBusy)
+	updated, _ := page.Update(launchErrMsg{err: wrapped})
+	out := updated.(LauncherPage).View()
+	if !strings.Contains(out, "port") || !strings.Contains(out, "in use") {
+		t.Fatalf("view missing port-busy hint; got:\n%s", out)
+	}
+}
+
+func TestLauncherPage_ModelMissingHint(t *testing.T) {
+	page := NewLauncherPage(nil, nil, nil)
+	wrapped := fmt.Errorf("foo: %w", processmgr.ErrModelNotFound)
+	updated, _ := page.Update(launchErrMsg{err: wrapped})
+	out := updated.(LauncherPage).View()
+	if !strings.Contains(out, "model file not found") {
+		t.Fatalf("view missing model-not-found hint; got:\n%s", out)
+	}
+}
+
+func TestLauncherPage_ForegroundBusyHint(t *testing.T) {
+	page := NewLauncherPage(nil, nil, nil)
+	updated, _ := page.Update(launchErrMsg{err: processmgr.ErrForegroundBusy})
+	out := updated.(LauncherPage).View()
+	if !strings.Contains(out, "foreground") || !strings.Contains(out, "[b]") {
+		t.Fatalf("view missing foreground-busy hint; got:\n%s", out)
+	}
+}
+
+func TestLauncherPage_HealthCheckTimeoutHint(t *testing.T) {
+	page := NewLauncherPage(nil, nil, nil)
+	wrapped := fmt.Errorf("pid 1: %w", processmgr.ErrHealthCheckTimeout)
+	updated, _ := page.Update(launchErrMsg{err: wrapped})
+	out := updated.(LauncherPage).View()
+	if !strings.Contains(out, "healthy") || !strings.Contains(out, "check logs") {
+		t.Fatalf("view missing health-timeout hint; got:\n%s", out)
+	}
+}
+
 func TestLauncherPage_HealthyEmitsSwitchToMonitor(t *testing.T) {
 	page := LauncherPage{}
 	model, cmd := page.Update(healthyMsg{pid: 4242})
@@ -208,4 +249,11 @@ func TestLauncherPage_HealthyEmitsSwitchToMonitor(t *testing.T) {
 		t.Fatalf("SwitchToMonitorMsg.PID = %d, want 4242", sw.PID)
 	}
 	_ = model
+}
+
+func TestLauncherPage_FooterMentionsHelp(t *testing.T) {
+	page := NewLauncherPage(nil, nil, nil)
+	if !strings.Contains(page.View(), "[?] help") {
+		t.Errorf("launcher footer missing [?] help; got:\n%s", page.View())
+	}
 }
