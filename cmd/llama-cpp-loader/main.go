@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -13,7 +14,9 @@ import (
 	"github.com/quantmind-br/llama-cpp-loader/internal/domain"
 	"github.com/quantmind-br/llama-cpp-loader/internal/service/llamahelp"
 	"github.com/quantmind-br/llama-cpp-loader/internal/service/modelscanner"
+	"github.com/quantmind-br/llama-cpp-loader/internal/service/processmgr"
 	"github.com/quantmind-br/llama-cpp-loader/internal/service/profilestore"
+	"github.com/quantmind-br/llama-cpp-loader/internal/service/validator"
 	"github.com/quantmind-br/llama-cpp-loader/internal/ui"
 	"github.com/quantmind-br/llama-cpp-loader/internal/ui/pages"
 )
@@ -34,13 +37,26 @@ func main() {
 	schema, schemaWarn := loadSchema()
 	scanner := modelscanner.New()
 
+	mgr := processmgr.New(processmgr.Config{
+		LogDir:       cfg.Paths.LogDir,
+		RegistryPath: filepath.Join(cfg.Paths.StateDir, "instances.json"),
+		LastUsedSink: store,
+	})
+	if err := mgr.Reconcile(); err != nil {
+		fmt.Fprintf(os.Stderr, "instance recovery: %v\n", err)
+	}
+
+	val := validator.New()
+
 	profilesPage := pages.NewProfilesPage(store, schema).
 		WithModelScanner(scanner, cfg.Models.SearchPaths)
 	modelsPage := pages.NewModelsPage(scanner, cfg.Models.SearchPaths)
+	launcherPage := pages.NewLauncherPage(store, mgr, val).SetSchema(schema)
 
 	root := ui.NewRoot(parseTab(cfg.UI.DefaultTab)).
 		WithProfilesPage(profilesPage).
-		WithModelsPage(modelsPage)
+		WithModelsPage(modelsPage).
+		WithLauncherPage(launcherPage)
 	if schemaWarn != "" {
 		root = root.WithStatusWarn(schemaWarn)
 	}
