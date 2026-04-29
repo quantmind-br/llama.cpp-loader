@@ -3,7 +3,6 @@ package processmgr
 import (
 	"os"
 	"path/filepath"
-	"strconv"
 	"testing"
 	"time"
 
@@ -74,6 +73,3 @@ func TestReconcile_KeepsLiveLlamaServer(t *testing.T) {
 	// Cleanup via fresh manager.
 	_ = freshMgr.Kill(inst.PID)
 }
-
-// helper to silence unused import
-var _ = strconv.Atoi

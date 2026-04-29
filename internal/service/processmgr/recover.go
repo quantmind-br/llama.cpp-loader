@@ -19,6 +19,10 @@ import (
 //     was configured with (default: "llama-server"). This avoids
 //     mistaking a recycled PID for a live server.
 //
+// Must be called at boot, before any Launch/Kill. It rewrites m.tracked
+// wholesale and saves the registry without coordinating with concurrent
+// callers — concurrent Launch/Kill would race the saveRegistry write.
+//
 // Linux-only. Other platforms: this method drops every entry (safe default).
 func (m *fsManager) Reconcile() error {
 	loaded, err := loadRegistry(m.registryPath)
