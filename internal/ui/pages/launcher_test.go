@@ -157,3 +157,36 @@ func TestLauncherPage_KillRemovesInstance(t *testing.T) {
 		t.Errorf("running len after kill = %d, want 0", len(page.running))
 	}
 }
+
+func TestLauncherPage_RefreshReloadsProfiles(t *testing.T) {
+	dir := t.TempDir()
+	store, _ := profilestore.NewFSStore(dir)
+	page := NewLauncherPage(store, nil, nil)
+
+	// 0 profiles initially.
+	model, _ := page.Update(launcherProfilesLoadedMsg{profiles: nil})
+	page = model.(LauncherPage)
+	if len(page.profiles) != 0 {
+		t.Fatalf("initial profiles = %d, want 0", len(page.profiles))
+	}
+
+	// Add one to disk.
+	if err := store.Save(domain.Profile{ID: "x", Name: "X", Model: "/m.gguf", Args: map[string]any{"port": float64(8080)}}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Press 'r' -> cmd that yields a fresh launcherProfilesLoadedMsg.
+	updated, cmd := page.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	page = updated.(LauncherPage)
+	if cmd == nil {
+		t.Fatal("'r' did not produce reload cmd")
+	}
+	msg := cmd()
+	loaded, ok := msg.(launcherProfilesLoadedMsg)
+	if !ok {
+		t.Fatalf("got %T, want launcherProfilesLoadedMsg", msg)
+	}
+	if len(loaded.profiles) != 1 || loaded.profiles[0].ID != "x" {
+		t.Errorf("reloaded profiles = %v", loaded.profiles)
+	}
+}

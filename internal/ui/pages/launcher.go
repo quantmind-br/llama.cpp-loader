@@ -157,6 +157,8 @@ func (p LauncherPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			p.running = out
 			p.status = fmt.Sprintf("killed pid=%d", pid)
 			return p, nil
+		case "r":
+			return p, loadProfilesCmd(p.store)
 		case "enter":
 			it, ok := p.plist.SelectedItem().(profileItem)
 			if !ok || p.manager == nil {
