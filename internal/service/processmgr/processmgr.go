@@ -28,6 +28,7 @@ type Manager interface {
 	List() []domain.RunningInstance
 	WaitHealthy(pid, port int, timeout time.Duration) error
 	TailLogs(pid int) (io.ReadCloser, error)
+	Close() error
 }
 
 // LastUsedSink is a minimal callback to update Profile.Meta.LastUsedAt.

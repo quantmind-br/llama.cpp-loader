@@ -61,6 +61,7 @@ func (f *fakeManager) Kill(pid int) error                          { return nil 
 func (f *fakeManager) List() []domain.RunningInstance              { return nil }
 func (f *fakeManager) WaitHealthy(_, _ int, _ time.Duration) error { return nil }
 func (f *fakeManager) TailLogs(_ int) (io.ReadCloser, error)       { return nil, processmgr.ErrUnknownPID }
+func (f *fakeManager) Close() error                                 { return nil }
 
 func TestLauncherPage_EnterLaunchesSelected(t *testing.T) {
 	dir := t.TempDir()

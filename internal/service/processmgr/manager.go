@@ -25,9 +25,10 @@ type fsManager struct {
 	registryPath string // absolute path to instances.json
 	sink         LastUsedSink
 
-	mu      sync.Mutex
-	tracked map[int]domain.RunningInstance // pid -> instance
-	fgPID   int                            // 0 if no foreground active; -1 if launching
+	mu           sync.Mutex
+	tracked      map[int]domain.RunningInstance // pid -> instance
+	fgPID        int                            // 0 if no foreground active; -1 if launching
+	livenessStop func()
 }
 
 // Config holds wiring for New. Caller owns the paths; the manager creates
@@ -46,13 +47,23 @@ func New(cfg Config) *fsManager {
 	if bin == "" {
 		bin = "llama-server"
 	}
-	return &fsManager{
+	m := &fsManager{
 		binary:       bin,
 		logDir:       cfg.LogDir,
 		registryPath: cfg.RegistryPath,
 		sink:         cfg.LastUsedSink,
 		tracked:      map[int]domain.RunningInstance{},
 	}
+	m.livenessStop = m.startLiveness()
+	return m
+}
+
+// Close stops the liveness ticker. Idempotent.
+func (m *fsManager) Close() error {
+	if m.livenessStop != nil {
+		m.livenessStop()
+	}
+	return nil
 }
 
 // NewWithCheck é como New, mas verifica via exec.LookPath se o binário existe

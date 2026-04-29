@@ -59,6 +59,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "process manager: %v\n", err)
 		os.Exit(1)
 	}
+	defer mgr.Close()
 	if err := mgr.Reconcile(); err != nil {
 		fmt.Fprintf(os.Stderr, "instance recovery: %v\n", err)
 	}
