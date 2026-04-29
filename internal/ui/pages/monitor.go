@@ -67,16 +67,17 @@ type subState struct {
 }
 
 type MonitorPage struct {
-	pm      procMgrIface
-	mm      monitor.Manager
-	ps      profileStoreIface // injected for `r` real restart (slice 6 / Task 4)
-	tbl     table.Model
-	subs    map[int]*subState
-	chans   map[int]<-chan monitor.MonitorEvent
-	subView SubViewKind
-	paused  bool
-	width   int
-	height  int
+	pm               procMgrIface
+	mm               monitor.Manager
+	ps               profileStoreIface // injected for `r` real restart (slice 6 / Task 4)
+	pendingSelectPID int               // set by MonitorSelectPIDMsg, consumed after the next refresh
+	tbl              table.Model
+	subs             map[int]*subState
+	chans            map[int]<-chan monitor.MonitorEvent
+	subView          SubViewKind
+	paused           bool
+	width            int
+	height           int
 }
 
 func NewMonitorPage(pm procMgrIface, mm monitor.Manager, ps profileStoreIface) *MonitorPage {
@@ -114,13 +115,6 @@ type monitorInstancesRefreshedMsg struct {
 	insts []domain.RunningInstance
 }
 
-// monitorSelectPIDInternalMsg moves the table cursor to the row whose PID
-// matches. Emitted by MonitorPage itself after a refresh, in response to
-// the public MonitorSelectPIDMsg.
-type monitorSelectPIDInternalMsg struct {
-	pid int
-}
-
 func (p *MonitorPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 	switch m := msg.(type) {
@@ -148,14 +142,15 @@ func (p *MonitorPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if c := p.applyInstances(m.insts); c != nil {
 			cmds = append(cmds, c)
 		}
+		if p.pendingSelectPID != 0 {
+			p.selectRow(p.pendingSelectPID)
+			p.pendingSelectPID = 0
+		}
 	case MonitorSelectPIDMsg:
-		// Refresh first (in case the new instance is not yet in subs/rows),
-		// then queue an internal selection step.
-		cmds = append(cmds, p.refreshInstancesCmd(), func() tea.Msg {
-			return monitorSelectPIDInternalMsg{pid: m.PID}
-		})
-	case monitorSelectPIDInternalMsg:
-		p.selectRow(m.pid)
+		// Defer the cursor move until the next refresh has applied fresh rows,
+		// so we never select against a stale row list.
+		p.pendingSelectPID = m.PID
+		cmds = append(cmds, p.refreshInstancesCmd())
 	case monitorEventMsg:
 		st, ok := p.subs[m.ev.PID]
 		if ok {

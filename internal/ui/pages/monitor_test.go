@@ -257,30 +257,45 @@ func TestMonitorPage_SelectsRowByPID(t *testing.T) {
 	mm := &fakeMonMgr{}
 	p := NewMonitorPage(pm, mm, nil)
 	p, _ = updateAs[*MonitorPage](p, monitorInstancesRefreshedMsg{insts: pm.List()})
-	// Default selection is row 0 (PID 100). Send select msg for PID 200.
-	// The public handler returns a tea.Batch of (refreshInstancesCmd,
-	// internal-select-msg cmd). Drain those cmds so the internal msg is
-	// fed back into Update and selectRow runs. updateAs only invokes
-	// Update; it does not auto-execute returned cmds.
+
+	// Public handler queues a refresh; pendingSelectPID is consumed by the
+	// refresh handler when it lands. We drain the single refresh cmd here.
 	p, cmd := updateAs[*MonitorPage](p, MonitorSelectPIDMsg{PID: 200})
 	if cmd == nil {
-		t.Fatal("expected cmd from MonitorSelectPIDMsg")
+		t.Fatalf("MonitorSelectPIDMsg should issue refreshInstancesCmd")
 	}
-	switch m := cmd().(type) {
-	case tea.BatchMsg:
-		for _, c := range m {
-			if c == nil {
-				continue
-			}
-			if inner := c(); inner != nil {
-				p, _ = updateAs[*MonitorPage](p, inner)
-			}
-		}
-	default:
-		p, _ = updateAs[*MonitorPage](p, m)
-	}
+	p, _ = updateAs[*MonitorPage](p, cmd())
+
 	if got := p.selectedPID(); got != 200 {
 		t.Fatalf("selectedPID = %d, want 200", got)
+	}
+}
+
+func TestMonitorPage_PendingSelectAppliesAfterFirstRefresh(t *testing.T) {
+	// Simulates: SwitchToMonitorMsg fires before MonitorPage has any rows
+	// (e.g., very first instance ever launched). pendingSelectPID must
+	// wait for the refresh to land, then position the cursor.
+	pm := &fakeProcMgr{insts: nil} // initially empty
+	mm := &fakeMonMgr{}
+	p := NewMonitorPage(pm, mm, nil)
+
+	// Public msg arrives while rows are still empty.
+	p, cmd := updateAs[*MonitorPage](p, MonitorSelectPIDMsg{PID: 200})
+	if cmd == nil {
+		t.Fatalf("MonitorSelectPIDMsg should issue refreshInstancesCmd")
+	}
+	// selectedPID is 0 right now (no rows), even though MonitorSelectPIDMsg arrived.
+	if got := p.selectedPID(); got != 0 {
+		t.Fatalf("selectedPID before refresh = %d, want 0", got)
+	}
+	// Now the registry gets the instance and the refresh cmd lands.
+	pm.insts = []domain.RunningInstance{
+		{PID: 100, Port: 8080, LogPath: "/tmp/a.log"},
+		{PID: 200, Port: 8081, LogPath: "/tmp/b.log"},
+	}
+	p, _ = updateAs[*MonitorPage](p, cmd())
+	if got := p.selectedPID(); got != 200 {
+		t.Fatalf("selectedPID after refresh = %d, want 200 (pendingSelectPID should have been consumed)", got)
 	}
 }
 
