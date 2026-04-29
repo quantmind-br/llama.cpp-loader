@@ -109,3 +109,38 @@ func TestMonitorPage_TabCyclesToSlots(t *testing.T) {
 		t.Fatalf("after Tab, slots view missing 'idle':\n%s", v)
 	}
 }
+
+func TestMonitorPage_MetricsViewRendersSparkline(t *testing.T) {
+	pm := &fakeProcMgr{insts: []domain.RunningInstance{{PID: 1, Port: 8080, LogPath: "/tmp/x.log"}}}
+	mm := &chanMonMgr{ch: make(chan monitor.MonitorEvent, 8)}
+	p := NewMonitorPage(pm, mm)
+	p.SetSize(120, 30)
+	p, _ = updateAs[*MonitorPage](p, monitorInstancesRefreshedMsg{insts: pm.List()})
+	p, _ = updateAs[*MonitorPage](p, monitorEventMsg{ev: monitor.MonitorEvent{
+		Source: monitor.SourceMetrics, PID: 1,
+		Data: monitor.Metrics{
+			TokensPerSec:   []float64{10, 20, 30, 40, 50},
+			RequestsPerSec: []float64{0, 0, 1, 2, 3},
+			WindowSeconds:  60,
+		},
+	}})
+	// Tab twice -> Metrics.
+	p, _ = updateAs[*MonitorPage](p, tea.KeyMsg{Type: tea.KeyTab})
+	p, _ = updateAs[*MonitorPage](p, tea.KeyMsg{Type: tea.KeyTab})
+
+	v := p.View()
+	if !strings.Contains(v, "tokens/s") {
+		t.Fatalf("metrics view missing 'tokens/s':\n%s", v)
+	}
+	bars := []rune{'▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'}
+	found := false
+	for _, b := range bars {
+		if strings.ContainsRune(v, b) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("metrics view has no sparkline bar")
+	}
+}

@@ -12,6 +12,7 @@ import (
 	"github.com/quantmind-br/llama-cpp-loader/internal/domain"
 	"github.com/quantmind-br/llama-cpp-loader/internal/service/monitor"
 	"github.com/quantmind-br/llama-cpp-loader/internal/service/processmgr"
+	"github.com/quantmind-br/llama-cpp-loader/internal/ui/components"
 )
 
 // SubViewKind selects which bottom region the MonitorPage renders.
@@ -228,6 +229,14 @@ func (p *MonitorPage) View() string {
 			if bottom == "idx | state      | ctx used/max | client\n" {
 				bottom = "(no slot data yet)"
 			}
+		case SubViewMetrics:
+			var b strings.Builder
+			fmt.Fprintf(&b, "tokens/s: %s\n", components.Sparkline(st.mets.TokensPerSec, 40))
+			fmt.Fprintf(&b, "req/s   : %s\n", components.Sparkline(st.mets.RequestsPerSec, 40))
+			if st.gpu.VRAMTotalMB > 0 {
+				fmt.Fprintf(&b, "VRAM    : %d/%d MB  util %.0f%%\n", st.gpu.VRAMUsedMB, st.gpu.VRAMTotalMB, st.gpu.Utilization)
+			}
+			bottom = b.String()
 		}
 	}
 	return top + "\n\n" + bottom
