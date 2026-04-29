@@ -2,7 +2,6 @@ package processmgr
 
 import (
 	"errors"
-	"fmt"
 	"net"
 	"path/filepath"
 	"testing"
@@ -147,12 +146,6 @@ func TestManager_Launch_NotifiesLastUsedSink(t *testing.T) {
 	if len(spy.calls) != 1 || spy.calls[0] != "tracked" {
 		t.Errorf("sink.calls = %v, want [tracked]", spy.calls)
 	}
-}
-
-// helper used by future tests
-func mustExtractPort(t *testing.T, p int) string {
-	t.Helper()
-	return fmt.Sprintf("%d", p)
 }
 
 func TestManager_Foreground_OnlyOneAllowed(t *testing.T) {

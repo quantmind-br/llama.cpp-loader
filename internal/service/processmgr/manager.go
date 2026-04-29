@@ -128,6 +128,7 @@ func (m *fsManager) WaitHealthy(pid int, port int, timeout time.Duration) error 
 					inst, ok := m.tracked[pid]
 					m.mu.Unlock()
 					if ok {
+						// best-effort; bookkeeping failure must not abort a healthy launch
 						_ = m.sink.MarkLastUsed(inst.ProfileID, time.Now().UTC())
 					}
 				}
