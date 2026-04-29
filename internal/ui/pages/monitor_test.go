@@ -87,3 +87,25 @@ func updateAs[T tea.Model](p tea.Model, msg tea.Msg) (T, tea.Cmd) {
 	out, cmd := p.Update(msg)
 	return out.(T), cmd
 }
+
+func TestMonitorPage_TabCyclesToSlots(t *testing.T) {
+	pm := &fakeProcMgr{insts: []domain.RunningInstance{{PID: 1, Port: 8080, LogPath: "/tmp/x.log"}}}
+	mm := &chanMonMgr{ch: make(chan monitor.MonitorEvent, 8)}
+	p := NewMonitorPage(pm, mm)
+	p.SetSize(120, 30)
+	p, _ = updateAs[*MonitorPage](p, monitorInstancesRefreshedMsg{insts: pm.List()})
+
+	// Inject a slot snapshot.
+	p, _ = updateAs[*MonitorPage](p, monitorEventMsg{ev: monitor.MonitorEvent{
+		Source: monitor.SourceSlots, PID: 1,
+		Data: monitor.SlotSnapshot{Slots: []monitor.Slot{{ID: 0, State: "idle", NCtxMax: 4096}}},
+	}})
+
+	// Press Tab -> sub-view becomes Slots.
+	p, _ = updateAs[*MonitorPage](p, tea.KeyMsg{Type: tea.KeyTab})
+
+	v := p.View()
+	if !strings.Contains(v, "idle") {
+		t.Fatalf("after Tab, slots view missing 'idle':\n%s", v)
+	}
+}

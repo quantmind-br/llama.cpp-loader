@@ -107,6 +107,10 @@ type monitorInstancesRefreshedMsg struct {
 func (p *MonitorPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 	switch m := msg.(type) {
+	case tea.KeyMsg:
+		if m.Type == tea.KeyTab {
+			p.subView = (p.subView + 1) % 3
+		}
 	case monitorInstancesRefreshedMsg:
 		if c := p.applyInstances(m.insts); c != nil {
 			cmds = append(cmds, c)
@@ -213,6 +217,16 @@ func (p *MonitorPage) View() string {
 			bottom = strings.Join(st.logs[start:], "\n")
 			if bottom == "" {
 				bottom = "(no log lines yet)"
+			}
+		case SubViewSlots:
+			var b strings.Builder
+			b.WriteString("idx | state      | ctx used/max | client\n")
+			for _, s := range st.slots.Slots {
+				fmt.Fprintf(&b, "%-3d | %-10s | %5d/%-5d | %s\n", s.ID, s.State, s.NCtxUsed, s.NCtxMax, s.Client)
+			}
+			bottom = b.String()
+			if bottom == "idx | state      | ctx used/max | client\n" {
+				bottom = "(no slot data yet)"
 			}
 		}
 	}
