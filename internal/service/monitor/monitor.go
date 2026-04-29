@@ -4,7 +4,6 @@ package monitor
 
 import (
 	"errors"
-	"io"
 	"net/http"
 	"time"
 )
@@ -116,20 +115,7 @@ func New(cfg Config) Manager {
 	return &fsMonitor{cfg: cfg}
 }
 
-// fsMonitor — Subscribe será implementado em subscribe.go (T7). Stub aqui
-// só para satisfazer a interface durante T1.
+// fsMonitor is the default Manager implementation. Subscribe lives in subscribe.go.
 type fsMonitor struct {
 	cfg Config
 }
-
-func (m *fsMonitor) Subscribe(pid int, port int, logPath string) (<-chan MonitorEvent, func() error, error) {
-	return nil, nil, errors.New("monitor: Subscribe not yet implemented (T7)")
-}
-
-// Garante imports usados depois.
-var _ io.ReadCloser = (*emptyReader)(nil)
-
-type emptyReader struct{}
-
-func (emptyReader) Read(p []byte) (int, error) { return 0, io.EOF }
-func (emptyReader) Close() error               { return nil }
