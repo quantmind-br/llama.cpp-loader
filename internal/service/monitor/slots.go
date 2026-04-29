@@ -42,32 +42,43 @@ func (p *slotsPoller) pollOnce(ctx context.Context) {
 }
 
 func (p *slotsPoller) fetchHealth(ctx context.Context) {
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, p.baseURL+"/health", nil)
-	resp, err := p.client.Do(req)
 	h := HealthStatus{}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.baseURL+"/health", nil)
+	if err != nil || req == nil {
+		h.OK = false
+		h.Status = "unreachable"
+		p.emit(MonitorEvent{Timestamp: time.Now(), Source: SourceHealth, Data: h})
+		return
+	}
+	resp, err := p.client.Do(req)
+	if resp != nil {
+		defer resp.Body.Close()
+	}
 	if err != nil || resp == nil {
 		h.OK = false
 		h.Status = "unreachable"
+	} else if resp.StatusCode == 200 {
+		h.OK = true
+		h.Status = "ok"
 	} else {
-		defer resp.Body.Close()
-		if resp.StatusCode == 200 {
-			h.OK = true
-			h.Status = "ok"
-		} else {
-			h.OK = false
-			h.Status = resp.Status
-		}
+		h.OK = false
+		h.Status = resp.Status
 	}
 	p.emit(MonitorEvent{Timestamp: time.Now(), Source: SourceHealth, Data: h})
 }
 
 func (p *slotsPoller) fetchSlots(ctx context.Context) {
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, p.baseURL+"/slots", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.baseURL+"/slots", nil)
+	if err != nil || req == nil {
+		return
+	}
 	resp, err := p.client.Do(req)
+	if resp != nil {
+		defer resp.Body.Close()
+	}
 	if err != nil || resp == nil {
 		return
 	}
-	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
 		return
 	}
