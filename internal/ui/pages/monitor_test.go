@@ -43,11 +43,7 @@ func TestMonitorPage_RendersInstanceRows(t *testing.T) {
 	p := NewMonitorPage(pm, mm, nil)
 	p.SetSize(120, 30)
 
-	if cmd := p.Init(); cmd != nil {
-		if msg := cmd(); msg != nil {
-			p.Update(msg)
-		}
-	}
+	p, _ = updateAs[*MonitorPage](p, monitorInstancesRefreshedMsg{insts: pm.List()})
 
 	view := p.View()
 	if !strings.Contains(view, "1234") {
@@ -64,11 +60,7 @@ func TestMonitorPage_LogsSubViewShowsLines(t *testing.T) {
 	mm := &chanMonMgr{ch: make(chan monitor.MonitorEvent, 8)}
 	p := NewMonitorPage(pm, mm, nil)
 	p.SetSize(120, 30)
-	if cmd := p.Init(); cmd != nil {
-		if msg := cmd(); msg != nil {
-			p.Update(msg)
-		}
-	}
+	p, _ = updateAs[*MonitorPage](p, monitorInstancesRefreshedMsg{insts: pm.List()})
 
 	mm.ch <- monitor.MonitorEvent{Source: monitor.SourceLogs, PID: 1, Data: monitor.LogLine{Line: "boot complete"}}
 	p, _ = updateAs[*MonitorPage](p, monitorEventMsg{ev: <-mm.ch})
@@ -445,6 +437,38 @@ func (r *restartTrackingMgr) Launch(p domain.Profile, mode processmgr.LaunchMode
 	r.launchedID = p.ID
 	r.launchMode = mode
 	return domain.RunningInstance{ProfileID: p.ID, PID: r.newPID, Port: r.newPort, Background: true}, nil
+}
+
+func TestMonitorPage_CrashedRowShowsMarker(t *testing.T) {
+	exit := time.Now().UTC()
+	pm := &fakeProcMgr{insts: []domain.RunningInstance{{
+		PID:       777,
+		Port:      8080,
+		ProfileID: "qwen",
+		LogPath:   "/tmp/x.log",
+		Crashed:   true,
+		ExitedAt:  &exit,
+	}}}
+	mm := &fakeMonMgr{}
+	p := NewMonitorPage(pm, mm, nil)
+	p, _ = updateAs[*MonitorPage](p, monitorInstancesRefreshedMsg{insts: pm.List()})
+	out := p.View()
+	if !strings.Contains(out, "✗") && !strings.Contains(out, "crashed") {
+		t.Fatalf("crashed row missing badge; got:\n%s", out)
+	}
+}
+
+func TestMonitorPage_PeriodicRefreshTickEmitsRefreshCmd(t *testing.T) {
+	pm := &fakeProcMgr{}
+	mm := &fakeMonMgr{}
+	p := NewMonitorPage(pm, mm, nil)
+	cmd := p.Init()
+	if cmd == nil {
+		t.Fatal("Init returned nil")
+	}
+	if !p.periodicTickActive {
+		t.Errorf("periodicTickActive = false; want true")
+	}
 }
 
 func TestMonitorPage_CancelOrphanIsAsync(t *testing.T) {

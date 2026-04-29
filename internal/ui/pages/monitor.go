@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
@@ -67,18 +68,24 @@ type subState struct {
 }
 
 type MonitorPage struct {
-	pm               procMgrIface
-	mm               monitor.Manager
-	ps               profileStoreIface // injected for `r` real restart (slice 6 / Task 4)
-	pendingSelectPID int               // set by MonitorSelectPIDMsg, consumed after the next refresh
-	tbl              table.Model
-	subs             map[int]*subState
-	chans            map[int]<-chan monitor.MonitorEvent
-	subView          SubViewKind
-	paused           bool
-	width            int
-	height           int
+	pm                 procMgrIface
+	mm                 monitor.Manager
+	ps                 profileStoreIface // injected for `r` real restart (slice 6 / Task 4)
+	pendingSelectPID   int               // set by MonitorSelectPIDMsg, consumed after the next refresh
+	tbl                table.Model
+	subs               map[int]*subState
+	chans              map[int]<-chan monitor.MonitorEvent
+	subView            SubViewKind
+	paused             bool
+	periodicTickActive bool
+	width              int
+	height             int
 }
+
+// monitorPeriodicTickMsg is delivered every 2s by Init/periodicTickCmd to drive
+// background refreshes of the instance list, so crashes detected by the
+// processmgr liveness goroutine surface in the UI without user interaction.
+type monitorPeriodicTickMsg struct{}
 
 func NewMonitorPage(pm procMgrIface, mm monitor.Manager, ps profileStoreIface) *MonitorPage {
 	cols := []table.Column{
@@ -105,10 +112,17 @@ func (p *MonitorPage) SetSize(w, h int) {
 	p.tbl.SetWidth(w)
 }
 
-func (p *MonitorPage) Init() tea.Cmd { return p.refreshInstancesCmd() }
+func (p *MonitorPage) Init() tea.Cmd {
+	p.periodicTickActive = true
+	return tea.Batch(p.refreshInstancesCmd(), p.periodicTickCmd())
+}
 
 func (p *MonitorPage) refreshInstancesCmd() tea.Cmd {
 	return func() tea.Msg { return monitorInstancesRefreshedMsg{insts: p.pm.List()} }
+}
+
+func (p *MonitorPage) periodicTickCmd() tea.Cmd {
+	return tea.Tick(2*time.Second, func(_ time.Time) tea.Msg { return monitorPeriodicTickMsg{} })
 }
 
 type monitorInstancesRefreshedMsg struct {
@@ -191,6 +205,8 @@ func (p *MonitorPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// so we never select against a stale row list.
 		p.pendingSelectPID = m.PID
 		cmds = append(cmds, p.refreshInstancesCmd())
+	case monitorPeriodicTickMsg:
+		cmds = append(cmds, p.refreshInstancesCmd(), p.periodicTickCmd())
 	case monitorEventMsg:
 		st, ok := p.subs[m.ev.PID]
 		if ok {
@@ -238,18 +254,27 @@ func (p *MonitorPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (p *MonitorPage) applyInstances(insts []domain.RunningInstance) tea.Cmd {
 	rows := make([]table.Row, 0, len(insts))
 	for _, ri := range insts {
+		pidCol := fmt.Sprintf("%d", ri.PID)
+		profileCol := ri.ProfileID
+		if ri.Crashed {
+			pidCol = "✗ " + pidCol
+			profileCol = ri.ProfileID + " (crashed)"
+		}
 		rows = append(rows, table.Row{
-			fmt.Sprintf("%d", ri.PID),
+			pidCol,
 			fmt.Sprintf("%d", ri.Port),
-			ri.ProfileID,
+			profileCol,
 			"--", "--", "--",
 		})
 	}
 	p.tbl.SetRows(rows)
 
-	// Add subs for new instances; collect listenCmds.
+	// Add subs for new (non-crashed) instances; collect listenCmds.
 	var cmds []tea.Cmd
 	for _, ri := range insts {
+		if ri.Crashed {
+			continue
+		}
 		if _, ok := p.subs[ri.PID]; ok {
 			continue
 		}
@@ -261,10 +286,19 @@ func (p *MonitorPage) applyInstances(insts []domain.RunningInstance) tea.Cmd {
 		p.chans[ri.PID] = ch
 		cmds = append(cmds, listenCmd(ch))
 	}
-	// Cancel orphan subs.
+	// Cancel subs for crashed insts (data sources are dead) and for orphans
+	// (PID no longer in the list at all). Async cancel preserves UI thread.
 	seen := make(map[int]bool, len(insts))
 	for _, ri := range insts {
 		seen[ri.PID] = true
+		if ri.Crashed {
+			if st, ok := p.subs[ri.PID]; ok {
+				cancel := st.cancel
+				go func() { _ = cancel() }()
+				delete(p.subs, ri.PID)
+				delete(p.chans, ri.PID)
+			}
+		}
 	}
 	for pid, st := range p.subs {
 		if !seen[pid] {
@@ -328,8 +362,9 @@ func (p *MonitorPage) View() string {
 func (p *MonitorPage) selectRow(pid int) {
 	rows := p.tbl.Rows()
 	for i, r := range rows {
+		pidCol := strings.TrimPrefix(r[0], "✗ ")
 		var rowPID int
-		_, _ = fmt.Sscanf(r[0], "%d", &rowPID)
+		_, _ = fmt.Sscanf(pidCol, "%d", &rowPID)
 		if rowPID == pid {
 			p.tbl.SetCursor(i)
 			return
@@ -343,7 +378,8 @@ func (p *MonitorPage) selectedPID() int {
 		return 0
 	}
 	row := p.tbl.SelectedRow()
+	pidCol := strings.TrimPrefix(row[0], "✗ ")
 	var pid int
-	_, _ = fmt.Sscanf(row[0], "%d", &pid)
+	_, _ = fmt.Sscanf(pidCol, "%d", &pid)
 	return pid
 }
