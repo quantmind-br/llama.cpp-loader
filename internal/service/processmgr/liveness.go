@@ -2,13 +2,10 @@ package processmgr
 
 import (
 	"errors"
+	"sync"
 	"syscall"
 	"time"
 )
-
-// errLivenessUnavailable é retornado quando a plataforma não suporta a probe
-// (não é o caso em Linux). Mantido como sentinela para futuras builds.
-var errLivenessUnavailable = errors.New("liveness probe unavailable on this platform")
 
 // probePIDAlive retorna true quando syscall.Kill(pid, 0) sucede, o que
 // significa que o processo existe (independente da permissão de signaling).
@@ -43,6 +40,7 @@ func (m *fsManager) startLivenessWithProbe(interval time.Duration, probe func(in
 			case now := <-t.C:
 				m.mu.Lock()
 				dirty := false
+				nowUTC := now.UTC()
 				for pid, inst := range m.tracked {
 					if inst.Crashed {
 						continue
@@ -50,9 +48,9 @@ func (m *fsManager) startLivenessWithProbe(interval time.Duration, probe func(in
 					if probe(pid) {
 						continue
 					}
-					t := now.UTC()
+					ts := nowUTC
 					inst.Crashed = true
-					inst.ExitedAt = &t
+					inst.ExitedAt = &ts
 					m.tracked[pid] = inst
 					dirty = true
 				}
@@ -64,13 +62,9 @@ func (m *fsManager) startLivenessWithProbe(interval time.Duration, probe func(in
 			}
 		}
 	}()
-	once := false
+	var stopOnce sync.Once
 	return func() {
-		if once {
-			return
-		}
-		once = true
-		close(stop)
+		stopOnce.Do(func() { close(stop) })
 	}
 }
 

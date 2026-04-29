@@ -1,7 +1,6 @@
 package processmgr
 
 import (
-	"errors"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
@@ -63,8 +62,5 @@ func TestLiveness_DefaultProbeRespectsESRCH(t *testing.T) {
 		// On Linux, syscall.Kill(99999, 0) typically returns ESRCH; if the
 		// machine is heavily loaded with PIDs this could exist. Skip when so.
 		t.Skip("PID 99999 is alive on this system; cannot validate ESRCH path")
-	}
-	if !errors.Is(errLivenessUnavailable, errors.New("not used")) {
-		// Just to ensure the package compiles with all symbols.
 	}
 }
