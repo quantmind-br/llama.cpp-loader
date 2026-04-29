@@ -109,6 +109,8 @@ type monitorInstancesRefreshedMsg struct {
 func (p *MonitorPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 	switch m := msg.(type) {
+	case tea.WindowSizeMsg:
+		p.SetSize(m.Width, m.Height)
 	case tea.KeyMsg:
 		switch {
 		case m.Type == tea.KeyTab:
@@ -116,11 +118,13 @@ func (p *MonitorPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case m.Type == tea.KeyRunes && len(m.Runes) == 1 && m.Runes[0] == 'k':
 			if pid := p.selectedPID(); pid > 0 {
 				_ = p.pm.Kill(pid)
+				cmds = append(cmds, p.refreshInstancesCmd())
 			}
 		case m.Type == tea.KeyRunes && len(m.Runes) == 1 && m.Runes[0] == 'r':
 			// Slice-5: r==kill (real restart needs ProfileStore — deferred to slice 6).
 			if pid := p.selectedPID(); pid > 0 {
 				_ = p.pm.Kill(pid)
+				cmds = append(cmds, p.refreshInstancesCmd())
 			}
 		case m.Type == tea.KeySpace:
 			p.paused = !p.paused

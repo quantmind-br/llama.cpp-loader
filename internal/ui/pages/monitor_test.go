@@ -165,3 +165,67 @@ type killTrackingMgr struct {
 }
 
 func (m *killTrackingMgr) Kill(pid int) error { m.killed = pid; return nil }
+
+func TestMonitorPage_KKillCancelsOrphanSub(t *testing.T) {
+	cancelCalled := 0
+	mm := &countingMonMgr{
+		ch:       make(chan monitor.MonitorEvent, 8),
+		onCancel: func() { cancelCalled++ },
+	}
+	pm := &killTrackingMgr{fakeProcMgr: fakeProcMgr{insts: []domain.RunningInstance{{PID: 7, Port: 8080, LogPath: "/tmp/x.log"}}}}
+	p := NewMonitorPage(pm, mm)
+	p.SetSize(120, 30)
+	p, _ = updateAs[*MonitorPage](p, monitorInstancesRefreshedMsg{insts: pm.List()})
+
+	// Press k. Expect kill + a refresh cmd.
+	_, cmd := p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+	if cmd == nil {
+		t.Fatal("expected refresh cmd after k, got nil")
+	}
+
+	// Simulate the manager removing the killed pid (i.e., List() now empty).
+	pm.fakeProcMgr.insts = nil
+	// Pump the refresh msg back through Update.
+	if msg := cmd(); msg != nil {
+		// cmd from k might be tea.Batch — drill in if needed.
+		switch tm := msg.(type) {
+		case monitorInstancesRefreshedMsg:
+			p, _ = updateAs[*MonitorPage](p, tm)
+		default:
+			// tea.Batch returns a BatchMsg; for this test we manually
+			// fire the refresh with the new instance list.
+			p, _ = updateAs[*MonitorPage](p, monitorInstancesRefreshedMsg{insts: pm.List()})
+		}
+	}
+
+	if cancelCalled != 1 {
+		t.Fatalf("cancel called %d times, want 1 (orphan sub not cancelled)", cancelCalled)
+	}
+	if _, ok := p.subs[7]; ok {
+		t.Fatal("orphan sub for pid 7 not deleted")
+	}
+}
+
+type countingMonMgr struct {
+	ch       chan monitor.MonitorEvent
+	onCancel func()
+}
+
+func (m *countingMonMgr) Subscribe(pid, port int, logPath string) (<-chan monitor.MonitorEvent, func() error, error) {
+	return m.ch, func() error {
+		if m.onCancel != nil {
+			m.onCancel()
+		}
+		return nil
+	}, nil
+}
+
+func TestMonitorPage_HandlesWindowSize(t *testing.T) {
+	pm := &fakeProcMgr{}
+	mm := fakeMonMgr{}
+	p := NewMonitorPage(pm, mm)
+	p.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	if p.width != 80 || p.height != 24 {
+		t.Fatalf("after WindowSizeMsg: width=%d height=%d, want 80x24", p.width, p.height)
+	}
+}
