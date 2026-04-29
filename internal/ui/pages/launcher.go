@@ -218,7 +218,7 @@ func (p LauncherPage) View() string {
 
 	body := lipgloss.JoinHorizontal(lipgloss.Top, left, "  ", right)
 
-	footer := "[b] mode  [enter] launch  [k] kill  [r] refresh"
+	footer := "[b] mode  [enter] launch  [k] kill last  [r] refresh"
 	if p.status != "" {
 		footer = p.status + "  |  " + footer
 	}

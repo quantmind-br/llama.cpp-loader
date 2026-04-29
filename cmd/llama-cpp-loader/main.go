@@ -61,6 +61,8 @@ func main() {
 		root = root.WithStatusWarn(schemaWarn)
 	}
 
+	// Background llama-server processes intentionally survive TUI exit;
+	// processmgr.Reconcile restores them at next boot from instances.json.
 	prog := tea.NewProgram(root, tea.WithAltScreen())
 	if _, err := prog.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "tui error: %v\n", err)
