@@ -47,6 +47,11 @@ class H(http.server.BaseHTTPRequestHandler):
             self.send_response(200); self.send_header("Content-Type","application/json")
             self.send_header("Content-Length", str(len(body))); self.end_headers()
             self.wfile.write(body)
+        elif self.path == "/slots":
+            body = b'[{"id":0,"state":"idle","n_ctx":0,"n_ctx_total":4096,"n_decoded":0,"n_prompt":0,"id_task":""}]'
+            self.send_response(200); self.send_header("Content-Type","application/json")
+            self.send_header("Content-Length", str(len(body))); self.end_headers()
+            self.wfile.write(body)
         else:
             self.send_response(404); self.end_headers()
     def log_message(self, *a, **kw): pass
