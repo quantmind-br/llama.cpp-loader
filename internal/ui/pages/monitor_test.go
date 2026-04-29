@@ -3,6 +3,7 @@ package pages
 import (
 	"io"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -38,7 +39,7 @@ func TestMonitorPage_RendersInstanceRows(t *testing.T) {
 		{PID: 5678, Port: 8081, ProfileID: "p2", LogPath: "/tmp/y.log"},
 	}}
 	mm := fakeMonMgr{}
-	p := NewMonitorPage(pm, mm)
+	p := NewMonitorPage(pm, mm, nil)
 	p.SetSize(120, 30)
 
 	if cmd := p.Init(); cmd != nil {
@@ -60,7 +61,7 @@ func TestMonitorPage_LogsSubViewShowsLines(t *testing.T) {
 	pm := &fakeProcMgr{insts: []domain.RunningInstance{{PID: 1, Port: 8080, LogPath: "/tmp/x.log"}}}
 
 	mm := &chanMonMgr{ch: make(chan monitor.MonitorEvent, 8)}
-	p := NewMonitorPage(pm, mm)
+	p := NewMonitorPage(pm, mm, nil)
 	p.SetSize(120, 30)
 	if cmd := p.Init(); cmd != nil {
 		if msg := cmd(); msg != nil {
@@ -83,6 +84,15 @@ func (m *chanMonMgr) Subscribe(pid, port int, logPath string) (<-chan monitor.Mo
 	return m.ch, func() error { return nil }, nil
 }
 
+type slowCancelMonMgr struct {
+	cancel func() error
+}
+
+func (s *slowCancelMonMgr) Subscribe(_, _ int, _ string) (<-chan monitor.MonitorEvent, func() error, error) {
+	ch := make(chan monitor.MonitorEvent)
+	return ch, s.cancel, nil
+}
+
 func updateAs[T tea.Model](p tea.Model, msg tea.Msg) (T, tea.Cmd) {
 	out, cmd := p.Update(msg)
 	return out.(T), cmd
@@ -91,7 +101,7 @@ func updateAs[T tea.Model](p tea.Model, msg tea.Msg) (T, tea.Cmd) {
 func TestMonitorPage_TabCyclesToSlots(t *testing.T) {
 	pm := &fakeProcMgr{insts: []domain.RunningInstance{{PID: 1, Port: 8080, LogPath: "/tmp/x.log"}}}
 	mm := &chanMonMgr{ch: make(chan monitor.MonitorEvent, 8)}
-	p := NewMonitorPage(pm, mm)
+	p := NewMonitorPage(pm, mm, nil)
 	p.SetSize(120, 30)
 	p, _ = updateAs[*MonitorPage](p, monitorInstancesRefreshedMsg{insts: pm.List()})
 
@@ -113,7 +123,7 @@ func TestMonitorPage_TabCyclesToSlots(t *testing.T) {
 func TestMonitorPage_MetricsViewRendersSparkline(t *testing.T) {
 	pm := &fakeProcMgr{insts: []domain.RunningInstance{{PID: 1, Port: 8080, LogPath: "/tmp/x.log"}}}
 	mm := &chanMonMgr{ch: make(chan monitor.MonitorEvent, 8)}
-	p := NewMonitorPage(pm, mm)
+	p := NewMonitorPage(pm, mm, nil)
 	p.SetSize(120, 30)
 	p, _ = updateAs[*MonitorPage](p, monitorInstancesRefreshedMsg{insts: pm.List()})
 	p, _ = updateAs[*MonitorPage](p, monitorEventMsg{ev: monitor.MonitorEvent{
@@ -148,7 +158,7 @@ func TestMonitorPage_MetricsViewRendersSparkline(t *testing.T) {
 func TestMonitorPage_KKillsSelectedPID(t *testing.T) {
 	pm := &killTrackingMgr{fakeProcMgr: fakeProcMgr{insts: []domain.RunningInstance{{PID: 7, Port: 8080, LogPath: "/tmp/x.log"}}}}
 	mm := &chanMonMgr{ch: make(chan monitor.MonitorEvent, 8)}
-	p := NewMonitorPage(pm, mm)
+	p := NewMonitorPage(pm, mm, nil)
 	p.SetSize(120, 30)
 	p, _ = updateAs[*MonitorPage](p, monitorInstancesRefreshedMsg{insts: pm.List()})
 
@@ -167,13 +177,13 @@ type killTrackingMgr struct {
 func (m *killTrackingMgr) Kill(pid int) error { m.killed = pid; return nil }
 
 func TestMonitorPage_KKillCancelsOrphanSub(t *testing.T) {
-	cancelCalled := 0
+	var cancelCalled int32
 	mm := &countingMonMgr{
 		ch:       make(chan monitor.MonitorEvent, 8),
-		onCancel: func() { cancelCalled++ },
+		onCancel: func() { atomic.AddInt32(&cancelCalled, 1) },
 	}
 	pm := &killTrackingMgr{fakeProcMgr: fakeProcMgr{insts: []domain.RunningInstance{{PID: 7, Port: 8080, LogPath: "/tmp/x.log"}}}}
-	p := NewMonitorPage(pm, mm)
+	p := NewMonitorPage(pm, mm, nil)
 	p.SetSize(120, 30)
 	p, _ = updateAs[*MonitorPage](p, monitorInstancesRefreshedMsg{insts: pm.List()})
 
@@ -198,8 +208,12 @@ func TestMonitorPage_KKillCancelsOrphanSub(t *testing.T) {
 		}
 	}
 
-	if cancelCalled != 1 {
-		t.Fatalf("cancel called %d times, want 1 (orphan sub not cancelled)", cancelCalled)
+	// Cancel runs asynchronously off the UI thread; poll briefly.
+	for i := 0; i < 100 && atomic.LoadInt32(&cancelCalled) == 0; i++ {
+		time.Sleep(2 * time.Millisecond)
+	}
+	if got := atomic.LoadInt32(&cancelCalled); got != 1 {
+		t.Fatalf("cancel called %d times, want 1 (orphan sub not cancelled)", got)
 	}
 	if _, ok := p.subs[7]; ok {
 		t.Fatal("orphan sub for pid 7 not deleted")
@@ -223,9 +237,49 @@ func (m *countingMonMgr) Subscribe(pid, port int, logPath string) (<-chan monito
 func TestMonitorPage_HandlesWindowSize(t *testing.T) {
 	pm := &fakeProcMgr{}
 	mm := fakeMonMgr{}
-	p := NewMonitorPage(pm, mm)
+	p := NewMonitorPage(pm, mm, nil)
 	p.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	if p.width != 80 || p.height != 24 {
 		t.Fatalf("after WindowSizeMsg: width=%d height=%d, want 80x24", p.width, p.height)
+	}
+}
+
+func TestMonitorPage_CancelOrphanIsAsync(t *testing.T) {
+	// Cancel func will block until release is signaled — simulating a
+	// stuck nvidia-smi that takes time to reap. The test asserts that
+	// applyInstances returns promptly without blocking on cancel.
+	release := make(chan struct{})
+	var cancelStarted, cancelFinished int32
+	mm := &slowCancelMonMgr{
+		cancel: func() error {
+			atomic.AddInt32(&cancelStarted, 1)
+			<-release
+			atomic.AddInt32(&cancelFinished, 1)
+			return nil
+		},
+	}
+	pm := &fakeProcMgr{insts: []domain.RunningInstance{{PID: 1, Port: 8080, LogPath: "/tmp/x.log"}}}
+	p := NewMonitorPage(pm, mm, nil)
+	p, _ = updateAs[*MonitorPage](p, monitorInstancesRefreshedMsg{insts: pm.List()})
+	pm.insts = nil // PID 1 vanished -> cancel should be triggered
+
+	done := make(chan struct{})
+	go func() {
+		p, _ = updateAs[*MonitorPage](p, monitorInstancesRefreshedMsg{insts: pm.List()})
+		close(done)
+	}()
+	select {
+	case <-done:
+		// applyInstances returned promptly even though cancel still hasn't completed.
+	case <-time.After(50 * time.Millisecond):
+		t.Fatalf("applyInstances blocked on cancel; cancelStarted=%d", atomic.LoadInt32(&cancelStarted))
+	}
+	// Now release the cancel.
+	close(release)
+	for i := 0; i < 100 && atomic.LoadInt32(&cancelFinished) == 0; i++ {
+		time.Sleep(2 * time.Millisecond)
+	}
+	if atomic.LoadInt32(&cancelFinished) != 1 {
+		t.Fatalf("cancel never completed after release; finished=%d", atomic.LoadInt32(&cancelFinished))
 	}
 }

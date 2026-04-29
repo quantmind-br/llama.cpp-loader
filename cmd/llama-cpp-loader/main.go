@@ -55,7 +55,7 @@ func main() {
 	launcherPage := pages.NewLauncherPage(store, mgr, val).SetSchema(schema)
 
 	mon := monitor.New(monitor.Config{NvidiaSMIPath: "nvidia-smi"})
-	monitorPage := pages.NewMonitorPage(mgr, mon)
+	monitorPage := pages.NewMonitorPage(mgr, mon, nil)
 
 	root := ui.NewRoot(parseTab(cfg.UI.DefaultTab)).
 		WithProfilesPage(profilesPage).

@@ -49,6 +49,12 @@ type procMgrIface interface {
 	TailLogs(pid int) (io.ReadCloser, error)
 }
 
+// profileStoreIface é o subset de profilestore.Store usado pela MonitorPage
+// para implementar `r` (restart real). nil -> `r` cai em modo kill-only.
+type profileStoreIface interface {
+	Get(id string) (domain.Profile, error)
+}
+
 // subState holds per-instance subscription state. Fields populated by later
 // tasks (T12-T14); skeleton tracks just the cancel func.
 type subState struct {
@@ -63,6 +69,7 @@ type subState struct {
 type MonitorPage struct {
 	pm      procMgrIface
 	mm      monitor.Manager
+	ps      profileStoreIface // injected for `r` real restart (slice 6 / Task 4)
 	tbl     table.Model
 	subs    map[int]*subState
 	chans   map[int]<-chan monitor.MonitorEvent
@@ -72,7 +79,7 @@ type MonitorPage struct {
 	height  int
 }
 
-func NewMonitorPage(pm procMgrIface, mm monitor.Manager) *MonitorPage {
+func NewMonitorPage(pm procMgrIface, mm monitor.Manager, ps profileStoreIface) *MonitorPage {
 	cols := []table.Column{
 		{Title: "PID", Width: 8},
 		{Title: "Port", Width: 6},
@@ -85,6 +92,7 @@ func NewMonitorPage(pm procMgrIface, mm monitor.Manager) *MonitorPage {
 	return &MonitorPage{
 		pm:    pm,
 		mm:    mm,
+		ps:    ps,
 		tbl:   t,
 		subs:  map[int]*subState{},
 		chans: map[int]<-chan monitor.MonitorEvent{},
@@ -210,7 +218,8 @@ func (p *MonitorPage) applyInstances(insts []domain.RunningInstance) tea.Cmd {
 	}
 	for pid, st := range p.subs {
 		if !seen[pid] {
-			_ = st.cancel()
+			cancel := st.cancel
+			go func() { _ = cancel() }() // do not block UI on subscription teardown
 			delete(p.subs, pid)
 			delete(p.chans, pid)
 		}
