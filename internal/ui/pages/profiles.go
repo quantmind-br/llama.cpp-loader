@@ -81,6 +81,19 @@ func (i item) Title() string       { return i.p.Name }
 func (i item) Description() string { return i.p.ID }
 func (i item) FilterValue() string { return i.p.Name + " " + i.p.ID }
 
+// corruptItem is a list row representing a profile JSON entry that failed
+// to parse. Edit/duplicate are no-ops; delete is allowed so the user can
+// remove the bad file. Implementa design § 8 — "marca entry com ⚠,
+// exclui de operações até user fix/delete".
+type corruptItem struct {
+	id  string
+	err error
+}
+
+func (c corruptItem) Title() string       { return "⚠ " + c.id }
+func (c corruptItem) Description() string { return "corrupt: " + c.err.Error() }
+func (c corruptItem) FilterValue() string { return c.id }
+
 // NewProfilesPage constructs the page wired to a Store and FlagSchema.
 func NewProfilesPage(store profilestore.Store, schema domain.FlagSchema) ProfilesPage {
 	delegate := list.NewDefaultDelegate()
@@ -111,6 +124,7 @@ func (p ProfilesPage) WithModelScanner(scanner components.ModelScanner, paths []
 // loadedMsg is emitted by the load command.
 type loadedMsg struct {
 	profiles []domain.Profile
+	diags    []profilestore.ListDiagnostic
 	err      error
 }
 
@@ -120,8 +134,8 @@ func (p ProfilesPage) Init() tea.Cmd {
 
 func (p ProfilesPage) loadCmd() tea.Cmd {
 	return func() tea.Msg {
-		ps, err := p.store.List()
-		return loadedMsg{profiles: ps, err: err}
+		ps, diags, err := p.store.ListWithDiagnostics()
+		return loadedMsg{profiles: ps, diags: diags, err: err}
 	}
 }
 
@@ -137,9 +151,12 @@ func (p ProfilesPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			p.flash = "load error: " + msg.err.Error()
 			return p, nil
 		}
-		items := make([]list.Item, 0, len(msg.profiles))
+		items := make([]list.Item, 0, len(msg.profiles)+len(msg.diags))
 		for _, pr := range msg.profiles {
 			items = append(items, item{p: pr})
+		}
+		for _, d := range msg.diags {
+			items = append(items, corruptItem{id: d.ID, err: d.Err})
 		}
 		p.list.SetItems(items)
 		return p, nil
@@ -483,6 +500,10 @@ func (p ProfilesPage) startNew() (tea.Model, tea.Cmd) {
 }
 
 func (p ProfilesPage) startEditSelected() (tea.Model, tea.Cmd) {
+	if _, isCorrupt := p.list.SelectedItem().(corruptItem); isCorrupt {
+		p.flash = "selected entry is corrupt — delete it (x) or fix the JSON file"
+		return p, nil
+	}
 	sel, ok := p.list.SelectedItem().(item)
 	if !ok {
 		return p, nil
@@ -508,6 +529,10 @@ func (p ProfilesPage) startEditSelected() (tea.Model, tea.Cmd) {
 }
 
 func (p ProfilesPage) duplicateSelected() (tea.Model, tea.Cmd) {
+	if _, isCorrupt := p.list.SelectedItem().(corruptItem); isCorrupt {
+		p.flash = "selected entry is corrupt — delete it (x) or fix the JSON file"
+		return p, nil
+	}
 	sel, ok := p.list.SelectedItem().(item)
 	if !ok {
 		return p, nil
@@ -522,11 +547,15 @@ func (p ProfilesPage) duplicateSelected() (tea.Model, tea.Cmd) {
 }
 
 func (p ProfilesPage) askDeleteSelected() (tea.Model, tea.Cmd) {
-	sel, ok := p.list.SelectedItem().(item)
-	if !ok {
+	var id string
+	switch sel := p.list.SelectedItem().(type) {
+	case item:
+		id = sel.p.ID
+	case corruptItem:
+		id = sel.id
+	default:
 		return p, nil
 	}
-	id := sel.p.ID
 	answer := false
 	p.confirmAnswer = &answer
 	form := huh.NewForm(huh.NewGroup(
