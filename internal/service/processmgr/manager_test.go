@@ -120,3 +120,34 @@ func mustExtractPort(t *testing.T, p int) string {
 	t.Helper()
 	return fmt.Sprintf("%d", p)
 }
+
+func TestManager_Foreground_OnlyOneAllowed(t *testing.T) {
+	mgr, _ := newTestManager(t)
+	port1 := freePort(t)
+	port2 := freePort(t)
+
+	p1 := domain.Profile{ID: "fg1", Model: "/dev/null", Args: map[string]any{"port": float64(port1)}}
+	inst1, err := mgr.Launch(p1, LaunchForeground)
+	if err != nil {
+		t.Fatalf("first foreground Launch: %v", err)
+	}
+	defer mgr.Kill(inst1.PID)
+
+	p2 := domain.Profile{ID: "fg2", Model: "/dev/null", Args: map[string]any{"port": float64(port2)}}
+	_, err = mgr.Launch(p2, LaunchForeground)
+	if err == nil {
+		t.Fatal("expected ErrForegroundBusy, got nil")
+	}
+	if !errors.Is(err, ErrForegroundBusy) {
+		t.Fatalf("err = %v, want ErrForegroundBusy", err)
+	}
+
+	// background launch alongside fg1 must still succeed
+	port3 := freePort(t)
+	p3 := domain.Profile{ID: "bg1", Model: "/dev/null", Args: map[string]any{"port": float64(port3)}}
+	inst3, err := mgr.Launch(p3, LaunchBackground)
+	if err != nil {
+		t.Fatalf("background launch alongside fg: %v", err)
+	}
+	defer mgr.Kill(inst3.PID)
+}

@@ -23,6 +23,7 @@ type fsManager struct {
 
 	mu      sync.Mutex
 	tracked map[int]domain.RunningInstance // pid -> instance
+	cmds    map[int]*exec.Cmd              // pid -> cmd, for zombie reaping
 	fgPID   int                            // 0 if no foreground active
 }
 
@@ -46,6 +47,7 @@ func New(cfg Config) *fsManager {
 		logDir:       cfg.LogDir,
 		registryPath: cfg.RegistryPath,
 		tracked:      map[int]domain.RunningInstance{},
+		cmds:         map[int]*exec.Cmd{},
 	}
 }
 
@@ -61,7 +63,7 @@ func (m *fsManager) Launch(p domain.Profile, mode LaunchMode) (domain.RunningIns
 		return domain.RunningInstance{}, err
 	}
 	if mode == LaunchForeground {
-		return domain.RunningInstance{}, fmt.Errorf("foreground not implemented in this task")
+		return m.launchForeground(p, port)
 	}
 
 	if err := os.MkdirAll(m.logDir, 0o755); err != nil {
@@ -95,8 +97,12 @@ func (m *fsManager) Launch(p domain.Profile, mode LaunchMode) (domain.RunningIns
 
 	m.mu.Lock()
 	m.tracked[inst.PID] = inst
+	m.cmds[inst.PID] = cmd
 	all := snapshotLocked(m.tracked)
 	m.mu.Unlock()
+
+	// Reap zombie automatically so Kill's signal-0 poll terminates quickly.
+	go func() { _ = cmd.Wait() }()
 
 	if err := saveRegistry(m.registryPath, all); err != nil {
 		return inst, fmt.Errorf("instance started (pid %d) but registry save failed: %w", inst.PID, err)
@@ -160,6 +166,10 @@ func (m *fsManager) Kill(pid int) error {
 
 	m.mu.Lock()
 	delete(m.tracked, pid)
+	delete(m.cmds, pid)
+	if m.fgPID == pid {
+		m.fgPID = 0
+	}
 	all := snapshotLocked(m.tracked)
 	m.mu.Unlock()
 	return saveRegistry(m.registryPath, all)
@@ -213,4 +223,47 @@ func checkPortFree(port int) error {
 	}
 	_ = l.Close()
 	return nil
+}
+
+// launchForeground spawns a single foreground instance. Stdout/Stderr are
+// not redirected (the caller — the LauncherPage — owns the streaming),
+// and the process is NOT detached via Setsid: it remains in the TUI's
+// process group so Ctrl+C from the TUI propagates if desired.
+func (m *fsManager) launchForeground(p domain.Profile, port int) (domain.RunningInstance, error) {
+	m.mu.Lock()
+	if m.fgPID != 0 {
+		m.mu.Unlock()
+		return domain.RunningInstance{}, ErrForegroundBusy
+	}
+	m.mu.Unlock()
+
+	cmd := exec.Command(m.binary, BuildArgs(p)...)
+	// Inherit stdout/stderr — caller drains via TailLogs in slice 5.
+	if err := cmd.Start(); err != nil {
+		return domain.RunningInstance{}, fmt.Errorf("start llama-server (fg): %w", err)
+	}
+
+	inst := domain.RunningInstance{
+		ProfileID:  p.ID,
+		PID:        cmd.Process.Pid,
+		Port:       port,
+		LogPath:    "", // no log file for foreground
+		StartedAt:  time.Now().UTC(),
+		Background: false,
+	}
+
+	m.mu.Lock()
+	m.tracked[inst.PID] = inst
+	m.cmds[inst.PID] = cmd
+	m.fgPID = inst.PID
+	all := snapshotLocked(m.tracked)
+	m.mu.Unlock()
+
+	// Reap zombie automatically so Kill's signal-0 poll terminates quickly.
+	go func() { _ = cmd.Wait() }()
+
+	if err := saveRegistry(m.registryPath, all); err != nil {
+		return inst, fmt.Errorf("fg started but registry save failed: %w", err)
+	}
+	return inst, nil
 }
