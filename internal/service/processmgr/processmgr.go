@@ -43,4 +43,5 @@ var (
 	ErrForegroundBusy     = errors.New("a foreground instance is already running")
 	ErrUnknownPID         = errors.New("pid is not tracked by this manager")
 	ErrHealthCheckTimeout = errors.New("llama-server did not become healthy within timeout")
+	ErrBinaryNotFound     = errors.New("llama-server binary not found in PATH")
 )

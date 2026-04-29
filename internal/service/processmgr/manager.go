@@ -55,6 +55,20 @@ func New(cfg Config) *fsManager {
 	}
 }
 
+// NewWithCheck é como New, mas verifica via exec.LookPath se o binário existe
+// antes de retornar. Erro: ErrBinaryNotFound (com o nome buscado embutido).
+// Use em main.go para bootear com fail-fast e modal de instalação.
+func NewWithCheck(cfg Config) (*fsManager, error) {
+	bin := cfg.Binary
+	if bin == "" {
+		bin = "llama-server"
+	}
+	if _, err := exec.LookPath(bin); err != nil {
+		return nil, fmt.Errorf("%w: %s", ErrBinaryNotFound, bin)
+	}
+	return New(cfg), nil
+}
+
 // Launch spawns llama-server with the args derived from p. mode chooses
 // between background (detached, log-to-file) and foreground (stdout/stderr
 // inherit; only one allowed at a time — covered in Task 6).

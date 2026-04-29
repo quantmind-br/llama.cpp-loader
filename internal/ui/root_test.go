@@ -132,6 +132,32 @@ func TestRoot_ForwardsSwitchPIDToMonitor(t *testing.T) {
 	}
 }
 
+func TestRoot_BootBlockerRendersModal(t *testing.T) {
+	r := NewRoot(TabProfiles).WithBootBlocker("llama-server not found", "Install with: pacman -S llama.cpp-cuda")
+	view := r.View()
+	if !strings.Contains(view, "llama-server not found") {
+		t.Errorf("missing title in view")
+	}
+	if !strings.Contains(view, "pacman -S") {
+		t.Errorf("missing install hint in view")
+	}
+}
+
+func TestRoot_BootBlockerSwallowsKeysExceptQuit(t *testing.T) {
+	r := NewRoot(TabProfiles).WithBootBlocker("err", "fix")
+	// Pressing 1 (tab switch) should NOT change active tab.
+	updated, _ := r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'1'}})
+	rm := updated.(RootModel)
+	if rm.active != TabProfiles {
+		t.Errorf("active changed despite blocker; got %v", rm.active)
+	}
+	// Pressing q must still quit (tea.Quit cmd).
+	_, cmd := r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	if cmd == nil {
+		t.Errorf("q must still produce tea.Quit when blocker is open")
+	}
+}
+
 type recordingMonitor struct {
 	lastSelectPID int
 }

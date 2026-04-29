@@ -204,6 +204,17 @@ func TestTailLogs_UnknownPID(t *testing.T) {
 	}
 }
 
+func TestManager_New_BinaryNotInPATH(t *testing.T) {
+	cfg := Config{Binary: "this-bin-does-not-exist-xyz", LogDir: t.TempDir(), RegistryPath: filepath.Join(t.TempDir(), "i.json")}
+	_, err := NewWithCheck(cfg)
+	if err == nil {
+		t.Fatal("expected error for missing binary, got nil")
+	}
+	if !errors.Is(err, ErrBinaryNotFound) {
+		t.Fatalf("err = %v, want ErrBinaryNotFound", err)
+	}
+}
+
 func TestManager_Foreground_OnlyOneAllowed(t *testing.T) {
 	mgr, _ := newTestManager(t)
 	port1 := freePort(t)

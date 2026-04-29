@@ -44,13 +44,20 @@ type Page interface {
 	View() string
 }
 
+// bootBlocker carrega o conteúdo de um modal bloqueante exibido sobre toda a UI.
+type bootBlocker struct {
+	title string
+	body  string
+}
+
 // RootModel is the top-level tea.Model.
 type RootModel struct {
-	pages   [4]tea.Model
-	active  Tab
-	status  components.StatusBar
-	width   int
-	height  int
+	pages       [4]tea.Model
+	active      Tab
+	status      components.StatusBar
+	width       int
+	height      int
+	bootBlocker *bootBlocker
 }
 
 // NewRoot constructs a RootModel with placeholder pages.
@@ -100,6 +107,14 @@ func (m RootModel) WithStatusWarn(msg string) RootModel {
 	return m
 }
 
+// WithBootBlocker mostra um modal bloqueante sobre toda a UI. Usado quando
+// algum recurso crítico falta na boot (e.g. llama-server fora do PATH).
+// Apenas `q` / `ctrl+c` continuam respondendo enquanto o blocker está ativo.
+func (m RootModel) WithBootBlocker(title, body string) RootModel {
+	m.bootBlocker = &bootBlocker{title: title, body: body}
+	return m
+}
+
 func (m RootModel) Init() tea.Cmd {
 	cmds := make([]tea.Cmd, 0, len(m.pages))
 	for _, p := range m.pages {
@@ -111,6 +126,17 @@ func (m RootModel) Init() tea.Cmd {
 }
 
 func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if m.bootBlocker != nil {
+		if k, ok := msg.(tea.KeyMsg); ok {
+			if k.Type == tea.KeyCtrlC || (k.Type == tea.KeyRunes && len(k.Runes) == 1 && k.Runes[0] == 'q') {
+				return m, tea.Quit
+			}
+		}
+		if w, ok := msg.(tea.WindowSizeMsg); ok {
+			m.width, m.height = w.Width, w.Height
+		}
+		return m, nil
+	}
 	switch msg := msg.(type) {
 	case pages.LauncherProfilesLoadedMsg:
 		updated, cmd := m.pages[TabLauncher].Update(msg)
@@ -180,6 +206,9 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m RootModel) View() string {
+	if m.bootBlocker != nil {
+		return components.Modal(m.bootBlocker.title, m.bootBlocker.body+"\n\nPress q to quit.", m.width, m.height)
+	}
 	header := m.renderTabs()
 	body := m.pages[m.active].View()
 	status := m.status.Render(m.width)
