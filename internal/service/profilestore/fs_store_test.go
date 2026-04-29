@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/quantmind-br/llama-cpp-loader/internal/domain"
 )
@@ -155,6 +156,33 @@ func TestFSStore_AtomicWrite_NoLeftoverTmp(t *testing.T) {
 		if filepath.Ext(e.Name()) == ".tmp" {
 			t.Errorf("found leftover tmp file: %s", e.Name())
 		}
+	}
+}
+
+func TestFSStore_MarkLastUsed(t *testing.T) {
+	dir := t.TempDir()
+	s, err := NewFSStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Save(sampleProfile("u", "U")); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 4, 28, 10, 0, 0, 0, time.UTC)
+	if err := s.MarkLastUsed("u", now); err != nil {
+		t.Fatalf("MarkLastUsed: %v", err)
+	}
+	got, _ := s.Get("u")
+	if got.Meta.LastUsedAt == nil || !got.Meta.LastUsedAt.Equal(now) {
+		t.Errorf("LastUsedAt = %v, want %v", got.Meta.LastUsedAt, now)
+	}
+}
+
+func TestFSStore_MarkLastUsed_NotFoundIsNoop(t *testing.T) {
+	dir := t.TempDir()
+	s, _ := NewFSStore(dir)
+	if err := s.MarkLastUsed("missing", time.Now()); err != nil {
+		t.Errorf("expected nil for missing, got %v", err)
 	}
 }
 

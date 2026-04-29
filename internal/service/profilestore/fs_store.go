@@ -106,6 +106,20 @@ func (s *FSStore) Save(p domain.Profile) error {
 	return nil
 }
 
+// MarkLastUsed updates Meta.LastUsedAt for the given profile id and persists.
+// No-op if the profile does not exist.
+func (s *FSStore) MarkLastUsed(id string, at time.Time) error {
+	p, err := s.Get(id)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return nil
+		}
+		return err
+	}
+	p.Meta.LastUsedAt = &at
+	return s.Save(p)
+}
+
 func (s *FSStore) Delete(id string) error {
 	if id == "" {
 		return ErrInvalidID

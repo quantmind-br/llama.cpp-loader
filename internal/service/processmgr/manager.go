@@ -20,6 +20,7 @@ type fsManager struct {
 	binary       string // resolved path or name on PATH; default "llama-server"
 	logDir       string // directory for background stdout/stderr capture
 	registryPath string // absolute path to instances.json
+	sink         LastUsedSink
 
 	mu      sync.Mutex
 	tracked map[int]domain.RunningInstance // pid -> instance
@@ -32,6 +33,7 @@ type Config struct {
 	Binary       string // override; empty = "llama-server"
 	LogDir       string
 	RegistryPath string
+	LastUsedSink LastUsedSink
 }
 
 // New constructs a Manager. It does NOT call Reconcile; main.go orchestrates
@@ -45,6 +47,7 @@ func New(cfg Config) *fsManager {
 		binary:       bin,
 		logDir:       cfg.LogDir,
 		registryPath: cfg.RegistryPath,
+		sink:         cfg.LastUsedSink,
 		tracked:      map[int]domain.RunningInstance{},
 	}
 }
@@ -109,7 +112,7 @@ func (m *fsManager) Launch(p domain.Profile, mode LaunchMode) (domain.RunningIns
 
 // WaitHealthy polls GET http://127.0.0.1:<port>/health with capped exponential
 // backoff (100ms, 200ms, 400ms, ..., max 1s) until 200 OK or timeout.
-func (m *fsManager) WaitHealthy(_ /*pid*/ int, port int, timeout time.Duration) error {
+func (m *fsManager) WaitHealthy(pid int, port int, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	delay := 100 * time.Millisecond
 	const maxDelay = time.Second
@@ -120,6 +123,14 @@ func (m *fsManager) WaitHealthy(_ /*pid*/ int, port int, timeout time.Duration) 
 		if err == nil {
 			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
+				if m.sink != nil {
+					m.mu.Lock()
+					inst, ok := m.tracked[pid]
+					m.mu.Unlock()
+					if ok {
+						_ = m.sink.MarkLastUsed(inst.ProfileID, time.Now().UTC())
+					}
+				}
 				return nil
 			}
 		}

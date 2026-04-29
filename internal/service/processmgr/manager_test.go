@@ -115,6 +115,40 @@ func TestManager_WaitHealthy_TimesOut(t *testing.T) {
 	}
 }
 
+type sinkSpy struct {
+	calls []string // ProfileIDs
+}
+
+func (s *sinkSpy) MarkLastUsed(profileID string, at time.Time) error {
+	s.calls = append(s.calls, profileID)
+	return nil
+}
+
+func TestManager_Launch_NotifiesLastUsedSink(t *testing.T) {
+	dir := t.TempDir()
+	spy := &sinkSpy{}
+	mgr := New(Config{
+		Binary:       fakeBinary(t),
+		LogDir:       filepath.Join(dir, "logs"),
+		RegistryPath: filepath.Join(dir, "instances.json"),
+		LastUsedSink: spy,
+	})
+	port := freePort(t)
+	p := domain.Profile{ID: "tracked", Model: "/dev/null", Args: map[string]any{"port": float64(port)}}
+	inst, err := mgr.Launch(p, LaunchBackground)
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	defer mgr.Kill(inst.PID)
+
+	if err := mgr.WaitHealthy(inst.PID, port, 5*time.Second); err != nil {
+		t.Fatalf("WaitHealthy: %v", err)
+	}
+	if len(spy.calls) != 1 || spy.calls[0] != "tracked" {
+		t.Errorf("sink.calls = %v, want [tracked]", spy.calls)
+	}
+}
+
 // helper used by future tests
 func mustExtractPort(t *testing.T, p int) string {
 	t.Helper()

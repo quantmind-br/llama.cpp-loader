@@ -28,6 +28,12 @@ type Manager interface {
 	WaitHealthy(pid, port int, timeout time.Duration) error
 }
 
+// LastUsedSink is a minimal callback to update Profile.Meta.LastUsedAt.
+// processmgr stays decoupled from profilestore via this interface.
+type LastUsedSink interface {
+	MarkLastUsed(profileID string, at time.Time) error
+}
+
 // Sentinel errors. UI maps these to status bar messages.
 var (
 	ErrPortBusy           = errors.New("port already in use")
