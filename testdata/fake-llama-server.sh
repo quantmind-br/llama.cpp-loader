@@ -51,9 +51,11 @@ class H(http.server.BaseHTTPRequestHandler):
             self.send_response(404); self.end_headers()
     def log_message(self, *a, **kw): pass
 srv = socketserver.TCPServer(("127.0.0.1", port), H)
-def stop(*_): srv.shutdown(); os._exit(0)
+def stop(*_): os._exit(0)
 signal.signal(signal.SIGTERM, stop); signal.signal(signal.SIGINT, stop)
-srv.serve_forever()
+t = threading.Thread(target=srv.serve_forever, daemon=True)
+t.start()
+signal.pause()
 PY
 fi
 

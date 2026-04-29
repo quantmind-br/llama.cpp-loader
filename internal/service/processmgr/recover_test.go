@@ -48,6 +48,13 @@ func TestReconcile_KeepsLiveLlamaServer(t *testing.T) {
 	}
 	defer mgr.Kill(inst.PID)
 
+	// Wait for the fake server to actually serve /health — this guarantees
+	// the bash→python3 exec transition has completed and /proc/<pid>/comm
+	// reads "python3" deterministically.
+	if err := mgr.WaitHealthy(inst.PID, port, 5*time.Second); err != nil {
+		t.Fatalf("WaitHealthy: %v", err)
+	}
+
 	// Forge a fresh manager pointing at the same registry — simulates restart.
 	dir := filepath.Dir(mgr.registryPath)
 	freshMgr := New(Config{

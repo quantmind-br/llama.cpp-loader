@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
-	"time"
 
 	"github.com/quantmind-br/llama-cpp-loader/internal/domain"
 )
@@ -50,10 +49,6 @@ func (m *fsManager) Reconcile() error {
 
 // pidAliveAndNameMatches returns true iff pid is alive AND the basename of
 // /proc/<pid>/comm contains expectedComm. Reads /proc directly (Linux).
-//
-// It retries the comm check for up to 500ms to tolerate processes that exec()
-// into the target binary shortly after spawn (e.g. a shell script that does
-// "exec python3 ..."). The pid-alive check (signal 0) is not retried.
 func pidAliveAndNameMatches(pid int, expectedComm string) bool {
 	proc, err := os.FindProcess(pid)
 	if err != nil {
@@ -62,20 +57,10 @@ func pidAliveAndNameMatches(pid int, expectedComm string) bool {
 	if err := proc.Signal(syscall.Signal(0)); err != nil {
 		return false
 	}
-	commPath := filepath.Join("/proc", fmt.Sprintf("%d", pid), "comm")
-	deadline := time.Now().Add(500 * time.Millisecond)
-	for {
-		commBytes, err := os.ReadFile(commPath)
-		if err != nil {
-			return false
-		}
-		comm := strings.TrimSpace(string(commBytes))
-		if strings.Contains(comm, expectedComm) {
-			return true
-		}
-		if time.Now().After(deadline) {
-			return false
-		}
-		time.Sleep(50 * time.Millisecond)
+	commBytes, err := os.ReadFile(filepath.Join("/proc", fmt.Sprintf("%d", pid), "comm"))
+	if err != nil {
+		return false
 	}
+	comm := strings.TrimSpace(string(commBytes))
+	return strings.Contains(comm, expectedComm)
 }
