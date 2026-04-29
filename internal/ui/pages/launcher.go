@@ -98,6 +98,11 @@ func (p LauncherPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		p.width, p.height = msg.Width, msg.Height
 		p.plist.SetSize(msg.Width/2, msg.Height-6)
+		// Reload profiles if not yet loaded — handles the case where Init ran
+		// while this tab was inactive and the load message was routed elsewhere.
+		if p.profiles == nil && p.loadErr == nil {
+			return p, loadProfilesCmd(p.store)
+		}
 		return p, nil
 
 	case launcherProfilesLoadedMsg:

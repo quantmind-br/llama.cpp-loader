@@ -81,6 +81,12 @@ func (m RootModel) WithModelsPage(p tea.Model) RootModel {
 	return m
 }
 
+// WithLauncherPage replaces the placeholder Launcher tab with a real model.
+func (m RootModel) WithLauncherPage(p tea.Model) RootModel {
+	m.pages[TabLauncher] = p
+	return m
+}
+
 // WithStatusWarn sets a warning message on the status bar (used at boot to
 // surface schema fallback notices).
 func (m RootModel) WithStatusWarn(msg string) RootModel {
