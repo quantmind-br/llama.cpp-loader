@@ -70,7 +70,7 @@ func TestLauncherPage_EnterLaunchesSelected(t *testing.T) {
 	mgr := &fakeManager{}
 	page := NewLauncherPage(store, mgr, nil)
 
-	model, _ := page.Update(launcherProfilesLoadedMsg{profiles: []domain.Profile{{
+	model, _ := page.Update(LauncherProfilesLoadedMsg{Profiles: []domain.Profile{{
 		ID: "alpha", Name: "Alpha", Model: "/m.gguf",
 		Args: map[string]any{"port": float64(8080)},
 	}}})
@@ -116,7 +116,7 @@ func TestLauncherPage_ValidationBlocksLaunch(t *testing.T) {
 	}
 	mgr := &fakeManager{}
 	page := NewLauncherPage(store, mgr, validator.New())
-	model, _ := page.Update(launcherProfilesLoadedMsg{profiles: []domain.Profile{bad}})
+	model, _ := page.Update(LauncherProfilesLoadedMsg{Profiles: []domain.Profile{bad}})
 	page = model.(LauncherPage)
 
 	_, cmd := page.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -164,7 +164,7 @@ func TestLauncherPage_RefreshReloadsProfiles(t *testing.T) {
 	page := NewLauncherPage(store, nil, nil)
 
 	// 0 profiles initially.
-	model, _ := page.Update(launcherProfilesLoadedMsg{profiles: nil})
+	model, _ := page.Update(LauncherProfilesLoadedMsg{Profiles: nil})
 	page = model.(LauncherPage)
 	if len(page.profiles) != 0 {
 		t.Fatalf("initial profiles = %d, want 0", len(page.profiles))
@@ -182,11 +182,11 @@ func TestLauncherPage_RefreshReloadsProfiles(t *testing.T) {
 		t.Fatal("'r' did not produce reload cmd")
 	}
 	msg := cmd()
-	loaded, ok := msg.(launcherProfilesLoadedMsg)
+	loaded, ok := msg.(LauncherProfilesLoadedMsg)
 	if !ok {
-		t.Fatalf("got %T, want launcherProfilesLoadedMsg", msg)
+		t.Fatalf("got %T, want LauncherProfilesLoadedMsg", msg)
 	}
-	if len(loaded.profiles) != 1 || loaded.profiles[0].ID != "x" {
-		t.Errorf("reloaded profiles = %v", loaded.profiles)
+	if len(loaded.Profiles) != 1 || loaded.Profiles[0].ID != "x" {
+		t.Errorf("reloaded profiles = %v", loaded.Profiles)
 	}
 }

@@ -106,6 +106,11 @@ func (m RootModel) Init() tea.Cmd {
 
 func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case pages.LauncherProfilesLoadedMsg:
+		updated, cmd := m.pages[TabLauncher].Update(msg)
+		m.pages[TabLauncher] = updated
+		return m, cmd
+
 	case pages.UseInNewProfileMsg:
 		// Switch to Profiles tab and forward the message so the page
 		// opens a pre-filled new draft.

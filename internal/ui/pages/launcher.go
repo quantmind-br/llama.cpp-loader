@@ -57,9 +57,9 @@ func (p LauncherPage) SetSchema(s domain.FlagSchema) LauncherPage {
 	return p
 }
 
-type launcherProfilesLoadedMsg struct {
-	profiles []domain.Profile
-	err      error
+type LauncherProfilesLoadedMsg struct {
+	Profiles []domain.Profile
+	Err      error
 }
 
 // launchedMsg is emitted after a successful Launch + WaitHealthy.
@@ -89,7 +89,7 @@ func (p LauncherPage) Init() tea.Cmd {
 func loadProfilesCmd(store profilestore.Store) tea.Cmd {
 	return func() tea.Msg {
 		got, err := store.List()
-		return launcherProfilesLoadedMsg{profiles: got, err: err}
+		return LauncherProfilesLoadedMsg{Profiles: got, Err: err}
 	}
 }
 
@@ -98,21 +98,16 @@ func (p LauncherPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		p.width, p.height = msg.Width, msg.Height
 		p.plist.SetSize(msg.Width/2, msg.Height-6)
-		// Reload profiles if not yet loaded — handles the case where Init ran
-		// while this tab was inactive and the load message was routed elsewhere.
-		if p.profiles == nil && p.loadErr == nil {
-			return p, loadProfilesCmd(p.store)
-		}
 		return p, nil
 
-	case launcherProfilesLoadedMsg:
-		if msg.err != nil {
-			p.loadErr = msg.err
+	case LauncherProfilesLoadedMsg:
+		if msg.Err != nil {
+			p.loadErr = msg.Err
 			return p, nil
 		}
-		p.profiles = msg.profiles
-		items := make([]list.Item, len(msg.profiles))
-		for i, pr := range msg.profiles {
+		p.profiles = msg.Profiles
+		items := make([]list.Item, len(msg.Profiles))
+		for i, pr := range msg.Profiles {
 			items[i] = profileItem{p: pr}
 		}
 		p.plist.SetItems(items)
