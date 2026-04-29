@@ -128,7 +128,8 @@ func (p LauncherPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case healthyMsg:
 		p.status = fmt.Sprintf("healthy pid=%d", msg.pid)
-		return p, nil
+		pid := msg.pid
+		return p, func() tea.Msg { return SwitchToMonitorMsg{PID: pid} }
 
 	case launchErrMsg:
 		p.status = "error: " + msg.err.Error()

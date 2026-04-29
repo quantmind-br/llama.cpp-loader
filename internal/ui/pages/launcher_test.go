@@ -192,3 +192,20 @@ func TestLauncherPage_RefreshReloadsProfiles(t *testing.T) {
 		t.Errorf("reloaded profiles = %v", loaded.Profiles)
 	}
 }
+
+func TestLauncherPage_HealthyEmitsSwitchToMonitor(t *testing.T) {
+	page := LauncherPage{}
+	model, cmd := page.Update(healthyMsg{pid: 4242})
+	if cmd == nil {
+		t.Fatal("expected SwitchToMonitorMsg cmd")
+	}
+	msg := cmd()
+	sw, ok := msg.(SwitchToMonitorMsg)
+	if !ok {
+		t.Fatalf("msg = %T, want SwitchToMonitorMsg", msg)
+	}
+	if sw.PID != 4242 {
+		t.Fatalf("SwitchToMonitorMsg.PID = %d, want 4242", sw.PID)
+	}
+	_ = model
+}
