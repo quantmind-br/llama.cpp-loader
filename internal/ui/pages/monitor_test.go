@@ -155,6 +155,20 @@ func TestMonitorPage_MetricsViewRendersSparkline(t *testing.T) {
 	}
 }
 
+func TestMonitorPage_MetricsPlaceholderWhenEmpty(t *testing.T) {
+	pm := &fakeProcMgr{insts: []domain.RunningInstance{{PID: 42, Port: 8080, LogPath: "/tmp/x.log"}}}
+	mm := &fakeMonMgr{}
+	p := NewMonitorPage(pm, mm, nil)
+	p, _ = updateAs[*MonitorPage](p, monitorInstancesRefreshedMsg{insts: pm.List()})
+	// Switch to metrics sub-view.
+	p, _ = updateAs[*MonitorPage](p, tea.KeyMsg{Type: tea.KeyTab})
+	p, _ = updateAs[*MonitorPage](p, tea.KeyMsg{Type: tea.KeyTab})
+	out := p.View()
+	if !strings.Contains(out, "(no metrics yet") {
+		t.Fatalf("metrics view missing placeholder; got:\n%s", out)
+	}
+}
+
 func TestMonitorPage_KKillsSelectedPID(t *testing.T) {
 	pm := &killTrackingMgr{fakeProcMgr: fakeProcMgr{insts: []domain.RunningInstance{{PID: 7, Port: 8080, LogPath: "/tmp/x.log"}}}}
 	mm := &chanMonMgr{ch: make(chan monitor.MonitorEvent, 8)}

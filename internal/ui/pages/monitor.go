@@ -258,6 +258,10 @@ func (p *MonitorPage) View() string {
 				bottom = "(no slot data yet)"
 			}
 		case SubViewMetrics:
+			if len(st.mets.TokensPerSec) == 0 && len(st.mets.RequestsPerSec) == 0 {
+				bottom = "(no metrics yet — first sample arrives after the slots tick)"
+				break
+			}
 			var b strings.Builder
 			fmt.Fprintf(&b, "tokens/s: %s\n", components.Sparkline(st.mets.TokensPerSec, 40))
 			fmt.Fprintf(&b, "req/s   : %s\n", components.Sparkline(st.mets.RequestsPerSec, 40))
