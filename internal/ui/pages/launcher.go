@@ -14,6 +14,7 @@ import (
 	"github.com/quantmind-br/llama-cpp-loader/internal/service/processmgr"
 	"github.com/quantmind-br/llama-cpp-loader/internal/service/profilestore"
 	"github.com/quantmind-br/llama-cpp-loader/internal/service/validator"
+	"github.com/quantmind-br/llama-cpp-loader/internal/ui/components"
 	"github.com/quantmind-br/llama-cpp-loader/internal/ui/theme"
 )
 
@@ -278,7 +279,7 @@ func (p LauncherPage) View() string {
 
 	body := lipgloss.JoinHorizontal(lipgloss.Top, left, "  ", right)
 
-	footer := "[b] mode  [enter] launch  [k] kill last  [r] refresh  [?] help"
+	footer := "[b] mode  [enter] launch  [k] kill last  [r] refresh" + components.HelpToken
 	if p.status != "" {
 		footer = p.status + "  |  " + footer
 	}

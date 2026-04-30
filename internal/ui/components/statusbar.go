@@ -10,6 +10,10 @@ import (
 	"github.com/quantmind-br/llama-cpp-loader/internal/ui/theme"
 )
 
+// HelpToken is the trailing footer hint for the help modal. Page footers
+// append it so the keybinding stays consistent across pages.
+const HelpToken = "  [?] help"
+
 // StatusLevel categorizes a status message.
 type StatusLevel int
 

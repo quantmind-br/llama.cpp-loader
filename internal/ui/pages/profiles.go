@@ -299,7 +299,7 @@ func (p ProfilesPage) detailView() string {
 		pr.ID,
 		pr.Model,
 		pr.Args["ngl"], pr.Args["ctx-size"], pr.Args["port"], pr.Args["flash-attn"],
-		theme.Subtitle.Render("[enter] edit  [n] new  [d] dup  [x] del  [L] launch  [?] help"),
+		theme.Subtitle.Render("[enter] edit  [n] new  [d] dup  [x] del  [L] launch" + components.HelpToken),
 	)
 }
 

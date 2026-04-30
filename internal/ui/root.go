@@ -87,7 +87,7 @@ func NewRoot(initial Tab) RootModel {
 			pages.Placeholder{TabName: TabModels.Title()},
 		},
 		active: initial,
-		status: components.StatusBar{Hints: "[1-4] tabs  [tab] next  [?] help  [q] quit"},
+		status: components.StatusBar{Hints: "[1-4] tabs  [tab] next  [q] quit" + components.HelpToken},
 	}
 }
 

@@ -323,7 +323,7 @@ func (p *MonitorPage) applyInstances(insts []domain.RunningInstance) tea.Cmd {
 
 func (p *MonitorPage) View() string {
 	footer := theme.Subtitle.Render(
-		"[v] cycle view  [Space] pause  [k] kill  [r] restart  [?] help",
+		"[v] cycle view  [Space] pause  [k] kill  [r] restart" + components.HelpToken,
 	)
 	header := lipgloss.NewStyle().Bold(true).Render("Running instances")
 	if len(p.tbl.Rows()) == 0 {

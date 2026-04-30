@@ -15,6 +15,7 @@ import (
 	"github.com/quantmind-br/llama-cpp-loader/internal/domain"
 	"github.com/quantmind-br/llama-cpp-loader/internal/service/modelscanner"
 	"github.com/quantmind-br/llama-cpp-loader/internal/service/profilestore"
+	"github.com/quantmind-br/llama-cpp-loader/internal/ui/components"
 	"github.com/quantmind-br/llama-cpp-loader/internal/ui/theme"
 )
 
@@ -468,7 +469,7 @@ func (p ModelsPage) View() string {
 	if p.filterMode || p.filter != "" {
 		filterLine = theme.Subtitle.Render(fmt.Sprintf("filter: %q", p.filter))
 	}
-	help := theme.Subtitle.Render("[/] filter  [R] rescan  [enter] actions  [esc] clear  [?] help")
+	help := theme.Subtitle.Render("[/] filter  [R] rescan  [enter] actions  [esc] clear" + components.HelpToken)
 	footer := ""
 	if p.flash != "" {
 		footer = theme.Subtitle.Render(p.flash)
