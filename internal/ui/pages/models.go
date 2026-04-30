@@ -397,36 +397,47 @@ func humanSize(n int64) string {
 	}
 }
 
+// handleFilterKey processes keystrokes while the filter buffer is active.
+// It returns handled=true when the key is consumed by filter mode; when
+// handled=false the caller falls through to the command-key dispatch
+// (e.g. Enter, which acts on the current selection).
+func (p ModelsPage) handleFilterKey(msg tea.KeyMsg) (handled bool, m tea.Model, cmd tea.Cmd) {
+	switch {
+	case key.Matches(msg, p.keys.Filter):
+		p.filterMode = false
+		return true, p, nil
+	case key.Matches(msg, p.keys.Cancel):
+		p.filterMode = false
+		p.filter = ""
+		p.refreshRows()
+		return true, p, nil
+	case key.Matches(msg, p.keys.Enter):
+		// fall through to the action-menu logic in handleKey
+		return false, p, nil
+	default:
+		if msg.String() == "backspace" {
+			if len(p.filter) > 0 {
+				p.filter = p.filter[:len(p.filter)-1]
+				p.refreshRows()
+			}
+			return true, p, nil
+		}
+		if len(msg.Runes) == 1 {
+			p.filter += string(msg.Runes)
+			p.refreshRows()
+			return true, p, nil
+		}
+		return true, p, nil
+	}
+}
+
 func (p ModelsPage) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// While typing in the filter buffer, route printable runes to the filter.
 	// Only Filter (toggle off), Cancel (clear), and Enter (act on selection)
 	// remain active — page shortcuts like Rescan must NOT fire from rune keys.
 	if p.filterMode {
-		switch {
-		case key.Matches(msg, p.keys.Filter):
-			p.filterMode = false
-			return p, nil
-		case key.Matches(msg, p.keys.Cancel):
-			p.filterMode = false
-			p.filter = ""
-			p.refreshRows()
-			return p, nil
-		case key.Matches(msg, p.keys.Enter):
-			// fall through to the action-menu logic below
-		default:
-			if msg.String() == "backspace" {
-				if len(p.filter) > 0 {
-					p.filter = p.filter[:len(p.filter)-1]
-					p.refreshRows()
-				}
-				return p, nil
-			}
-			if len(msg.Runes) == 1 {
-				p.filter += string(msg.Runes)
-				p.refreshRows()
-				return p, nil
-			}
-			return p, nil
+		if handled, m, cmd := p.handleFilterKey(msg); handled {
+			return m, cmd
 		}
 	}
 
@@ -455,39 +466,46 @@ func (p ModelsPage) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		p, fc := p.withFlash("rescan started")
 		return p, tea.Batch(startScanCmd(p.scanner, p.paths, p.scanID), fc)
 	case key.Matches(msg, p.keys.Enter):
-		if len(p.table.Rows()) == 0 {
-			return p, nil
-		}
-		idx := p.table.Cursor()
-		if idx < 0 {
-			return p, nil
-		}
-		// Map row idx to file via filtered ordering. Recompute filtered
-		// list to match what's displayed.
-		visible := p.visibleFiles()
-		if idx >= len(visible) {
-			return p, nil
-		}
-		selected := visible[idx]
-		opts := []actionOption{
-			{label: "Use in new profile", value: "new"},
-		}
-		if p.store != nil {
-			opts = append(opts, actionOption{label: "Use in existing profile", value: "existing"})
-		}
-		opts = append(opts, actionOption{label: "Copy path to clipboard", value: "reveal"})
-		p.action = &actionMenu{
-			title:      "Action for " + selected.Name,
-			options:    opts,
-			targetPath: selected.Path,
-			stage:      actionStageRoot,
-		}
-		return p, nil
+		return p.openActionMenuForSelection()
 	}
 
 	t, cmd := p.table.Update(msg)
 	p.table = t
 	return p, cmd
+}
+
+// openActionMenuForSelection builds the per-row action menu for the
+// currently selected model file, returning the page unchanged when the
+// table is empty or the cursor is out of range.
+func (p ModelsPage) openActionMenuForSelection() (tea.Model, tea.Cmd) {
+	if len(p.table.Rows()) == 0 {
+		return p, nil
+	}
+	idx := p.table.Cursor()
+	if idx < 0 {
+		return p, nil
+	}
+	// Map row idx to file via filtered ordering. Recompute filtered
+	// list to match what's displayed.
+	visible := p.visibleFiles()
+	if idx >= len(visible) {
+		return p, nil
+	}
+	selected := visible[idx]
+	opts := []actionOption{
+		{label: "Use in new profile", value: "new"},
+	}
+	if p.store != nil {
+		opts = append(opts, actionOption{label: "Use in existing profile", value: "existing"})
+	}
+	opts = append(opts, actionOption{label: "Copy path to clipboard", value: "reveal"})
+	p.action = &actionMenu{
+		title:      "Action for " + selected.Name,
+		options:    opts,
+		targetPath: selected.Path,
+		stage:      actionStageRoot,
+	}
+	return p, nil
 }
 
 func (p ModelsPage) View() string {
