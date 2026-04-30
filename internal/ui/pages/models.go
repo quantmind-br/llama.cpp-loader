@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
+	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
@@ -15,10 +17,13 @@ import (
 	"github.com/quantmind-br/llama-cpp-loader/internal/domain"
 	"github.com/quantmind-br/llama-cpp-loader/internal/service/modelscanner"
 	"github.com/quantmind-br/llama-cpp-loader/internal/service/profilestore"
-	"github.com/quantmind-br/llama-cpp-loader/internal/ui/components"
 	"github.com/quantmind-br/llama-cpp-loader/internal/ui/internal/filter"
 	"github.com/quantmind-br/llama-cpp-loader/internal/ui/theme"
 )
+
+// clipboardWriter is overridable in tests to bypass the system clipboard
+// (which may be unavailable on CI without a display server).
+var clipboardWriter = clipboard.WriteAll
 
 // pathStatus tracks per-root scan progress shown above the table.
 type pathStatus struct {
@@ -66,10 +71,18 @@ type ModelsPage struct {
 	filter     string
 	filterMode bool
 	flash      string
+	flashAt    time.Time
 
 	action *actionMenu
 
 	keys modelsKeyMap
+}
+
+// withFlash sets the flash message + stamp and returns the auto-clear Cmd.
+func (p ModelsPage) withFlash(msg string) (ModelsPage, tea.Cmd) {
+	p.flash = msg
+	p.flashAt = time.Now()
+	return p, scheduleFlashClear("models", p.flashAt)
 }
 
 type modelsKeyMap struct {
@@ -118,10 +131,11 @@ func (p ModelsPage) WithProfileStore(store profilestore.Store) ModelsPage {
 }
 
 // IsCapturingInput tells the root model when the page owns global
-// keystrokes (Tab/Shift+Tab) — true while the inline action menu is
-// open so cursor navigation does not leak into tab cycling.
+// keystrokes (Tab/Shift+Tab) — true while the inline action menu or
+// filter input is open so cursor navigation does not leak into tab
+// cycling and printable characters are not stolen by global shortcuts.
 func (p ModelsPage) IsCapturingInput() bool {
-	return p.action != nil
+	return p.action != nil || p.filterMode
 }
 
 // scanStartedMsg delivers the channel + cancel handle from a fresh scan
@@ -182,6 +196,12 @@ func (p ModelsPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		p.width, p.height = msg.Width, msg.Height
 		p.table.SetHeight(msg.Height - 8)
+		return p, nil
+	case flashClearMsg:
+		if msg.tag == "models" && msg.at.Equal(p.flashAt) {
+			p.flash = ""
+			p.flashAt = time.Time{}
+		}
 		return p, nil
 	case scanStartedMsg:
 		if msg.scanID != p.scanID {
@@ -253,25 +273,29 @@ func (p ModelsPage) commitRootAction(choice, path string) (tea.Model, tea.Cmd) {
 		p.action = nil
 		return p, func() tea.Msg { return UseInNewProfileMsg{Path: path} }
 	case "reveal":
-		p.flash = path
 		p.action = nil
-		return p, nil
+		if err := clipboardWriter(path); err != nil {
+			p, fc := p.withFlash("clipboard error: " + err.Error())
+			return p, fc
+		}
+		p, fc := p.withFlash("path copied to clipboard")
+		return p, fc
 	case "existing":
 		if p.store == nil {
-			p.flash = "profile store not wired"
 			p.action = nil
-			return p, nil
+			p, fc := p.withFlash("profile store not wired")
+			return p, fc
 		}
 		profiles, err := p.store.List()
 		if err != nil {
-			p.flash = "load profiles: " + err.Error()
 			p.action = nil
-			return p, nil
+			p, fc := p.withFlash("load profiles: " + err.Error())
+			return p, fc
 		}
 		if len(profiles) == 0 {
-			p.flash = "no existing profiles to update"
 			p.action = nil
-			return p, nil
+			p, fc := p.withFlash("no existing profiles to update")
+			return p, fc
 		}
 		opts := make([]actionOption, 0, len(profiles))
 		for _, pr := range profiles {
@@ -294,21 +318,21 @@ func (p ModelsPage) commitRootAction(choice, path string) (tea.Model, tea.Cmd) {
 func (p ModelsPage) commitProfileTarget(profileID, path string) (tea.Model, tea.Cmd) {
 	p.action = nil
 	if p.store == nil {
-		p.flash = "profile store not wired"
-		return p, nil
+		p, fc := p.withFlash("profile store not wired")
+		return p, fc
 	}
 	pr, err := p.store.Get(profileID)
 	if err != nil {
-		p.flash = "load profile: " + err.Error()
-		return p, nil
+		p, fc := p.withFlash("load profile: " + err.Error())
+		return p, fc
 	}
 	pr.Model = path
 	if err := p.store.Save(pr); err != nil {
-		p.flash = "save profile: " + err.Error()
-		return p, nil
+		p, fc := p.withFlash("save profile: " + err.Error())
+		return p, fc
 	}
-	p.flash = "updated " + profileID
-	return p, nil
+	p, fc := p.withFlash("updated " + profileID)
+	return p, fc
 }
 
 func (p ModelsPage) handleScanEvent(evt domain.ScanEvent) (tea.Model, tea.Cmd) {
@@ -374,6 +398,38 @@ func humanSize(n int64) string {
 }
 
 func (p ModelsPage) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// While typing in the filter buffer, route printable runes to the filter.
+	// Only Filter (toggle off), Cancel (clear), and Enter (act on selection)
+	// remain active — page shortcuts like Rescan must NOT fire from rune keys.
+	if p.filterMode {
+		switch {
+		case key.Matches(msg, p.keys.Filter):
+			p.filterMode = false
+			return p, nil
+		case key.Matches(msg, p.keys.Cancel):
+			p.filterMode = false
+			p.filter = ""
+			p.refreshRows()
+			return p, nil
+		case key.Matches(msg, p.keys.Enter):
+			// fall through to the action-menu logic below
+		default:
+			if msg.String() == "backspace" {
+				if len(p.filter) > 0 {
+					p.filter = p.filter[:len(p.filter)-1]
+					p.refreshRows()
+				}
+				return p, nil
+			}
+			if len(msg.Runes) == 1 {
+				p.filter += string(msg.Runes)
+				p.refreshRows()
+				return p, nil
+			}
+			return p, nil
+		}
+	}
+
 	switch {
 	case key.Matches(msg, p.keys.Filter):
 		p.filterMode = !p.filterMode
@@ -391,13 +447,13 @@ func (p ModelsPage) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			p.cancel = nil
 		}
 		p.scanID++
-		p.flash = "rescan started"
 		p.files = nil
 		for _, root := range p.paths {
 			p.statusMap[root] = pathStatus{state: "scanning"}
 		}
 		p.refreshRows()
-		return p, startScanCmd(p.scanner, p.paths, p.scanID)
+		p, fc := p.withFlash("rescan started")
+		return p, tea.Batch(startScanCmd(p.scanner, p.paths, p.scanID), fc)
 	case key.Matches(msg, p.keys.Enter):
 		if len(p.table.Rows()) == 0 {
 			return p, nil
@@ -419,7 +475,7 @@ func (p ModelsPage) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if p.store != nil {
 			opts = append(opts, actionOption{label: "Use in existing profile", value: "existing"})
 		}
-		opts = append(opts, actionOption{label: "Reveal path", value: "reveal"})
+		opts = append(opts, actionOption{label: "Copy path to clipboard", value: "reveal"})
 		p.action = &actionMenu{
 			title:      "Action for " + selected.Name,
 			options:    opts,
@@ -427,22 +483,6 @@ func (p ModelsPage) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			stage:      actionStageRoot,
 		}
 		return p, nil
-	}
-
-	if p.filterMode {
-		switch msg.String() {
-		case "backspace":
-			if len(p.filter) > 0 {
-				p.filter = p.filter[:len(p.filter)-1]
-				p.refreshRows()
-			}
-			return p, nil
-		}
-		if len(msg.Runes) == 1 {
-			p.filter += string(msg.Runes)
-			p.refreshRows()
-			return p, nil
-		}
 	}
 
 	t, cmd := p.table.Update(msg)
@@ -460,12 +500,43 @@ func (p ModelsPage) View() string {
 	if p.filterMode || p.filter != "" {
 		filterLine = theme.Subtitle.Render(fmt.Sprintf("filter: %q", p.filter))
 	}
-	help := theme.Subtitle.Render("[/] filter  [R] rescan  [enter] actions  [esc] clear" + components.HelpToken)
 	footer := ""
 	if p.flash != "" {
-		footer = theme.Subtitle.Render(p.flash)
+		style := theme.Subtitle
+		if !p.flashAt.IsZero() && time.Since(p.flashAt) >= flashDimAfter {
+			style = style.Faint(true)
+		}
+		footer = style.Render(p.flash)
 	}
-	return lipgloss.JoinVertical(lipgloss.Left, header, statusLine, p.table.View(), filterLine, help, footer)
+	if len(p.files) == 0 && (len(p.paths) == 0 || p.hasScannedRoot()) {
+		emptyMsg := theme.Subtitle.Render("(no .gguf files in configured search paths — edit ~/.config/llama-cpp-loader/config.toml)")
+		return lipgloss.JoinVertical(lipgloss.Left, header, statusLine, emptyMsg, filterLine, footer)
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, header, statusLine, p.table.View(), filterLine, footer)
+}
+
+// hasScannedRoot reports whether at least one configured root has finished
+// its initial scan. Empty-state copy only renders once we know the scan is
+// complete — otherwise the user might think their models are missing
+// while the scanner is still walking the filesystem.
+func (p ModelsPage) hasScannedRoot() bool {
+	for _, st := range p.statusMap {
+		if st.state == "scanned" {
+			return true
+		}
+	}
+	return false
+}
+
+// Hints implements ui.HintProvider for the Models tab.
+func (p ModelsPage) Hints() string {
+	if p.action != nil {
+		return "[↑↓] move  [enter] select  [esc] cancel"
+	}
+	if p.filterMode {
+		return "[type] filter  [esc] clear"
+	}
+	return "[/] filter  [R] rescan  [enter] actions  [esc] clear"
 }
 
 // renderActionMenu draws the inline modal-ish overlay used for both the
@@ -491,21 +562,45 @@ func (p ModelsPage) renderStatus() string {
 	}
 	parts := make([]string, 0, len(p.paths))
 	for _, root := range p.paths {
+		display := truncFront(root, 40)
 		st := p.statusMap[root]
 		var label string
 		switch st.state {
 		case "scanning":
-			label = theme.Subtitle.Render(fmt.Sprintf("%s [scanning]", root))
+			label = theme.Subtitle.Render(fmt.Sprintf("%s [scanning]", display))
 		case "scanned":
-			label = theme.OK.Render(fmt.Sprintf("%s [%d]", root, st.count))
+			label = theme.OK.Render(fmt.Sprintf("%s [%d]", display, st.count))
 		case "error":
-			label = theme.Error.Render(fmt.Sprintf("%s [error: %s]", root, truncate(st.err, 30)))
+			label = theme.Error.Render(fmt.Sprintf("%s [error: %s]", display, truncate(st.err, 30)))
 		default:
-			label = theme.Subtitle.Render(root)
+			label = theme.Subtitle.Render(display)
 		}
 		parts = append(parts, label)
 	}
-	return strings.Join(parts, "  ")
+	// If the joined width fits, single-line — otherwise wrap one label per
+	// line so labels remain legible on narrow terminals.
+	const sep = "  "
+	width := 0
+	for i, lbl := range parts {
+		width += lipgloss.Width(lbl)
+		if i > 0 {
+			width += len(sep)
+		}
+	}
+	if p.width > 0 && width > p.width-2 {
+		return strings.Join(parts, "\n")
+	}
+	return strings.Join(parts, sep)
+}
+
+// truncFront returns s with leading characters replaced by "…" when its
+// length exceeds n. Preserves the tail because that's the discriminator
+// for similar-looking root paths.
+func truncFront(s string, n int) string {
+	if n <= 1 || len(s) <= n {
+		return s
+	}
+	return "…" + s[len(s)-(n-1):]
 }
 
 // UseInNewProfileMsg requests creating a new profile pre-filled with Path.

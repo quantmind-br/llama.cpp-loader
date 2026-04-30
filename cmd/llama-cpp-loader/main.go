@@ -90,6 +90,13 @@ func main() {
 		fmt.Fprintf(os.Stderr, "tui error: %v\n", err)
 		os.Exit(1)
 	}
+	if running := mgr.List(); len(running) > 0 {
+		fmt.Fprintf(os.Stderr, "%d background llama-server instance(s) still running:\n", len(running))
+		for _, ri := range running {
+			fmt.Fprintf(os.Stderr, "  PID %d (port %d)\n", ri.PID, ri.Port)
+		}
+		fmt.Fprintln(os.Stderr, "Restart the TUI to manage them.")
+	}
 }
 
 // loadSchema attempts to parse llama-server --help. On failure (binary absent,

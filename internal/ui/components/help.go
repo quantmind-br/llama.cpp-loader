@@ -13,11 +13,15 @@ const HelpMarkdown = `# llama-cpp-loader — Keybindings
 - ` + "`?`" + ` — toggle this help
 - ` + "`q`" + ` / ` + "`Ctrl+C`" + ` — quit (background instances survive)
 
+_Convention: lowercase keys are light/cheap actions; uppercase keys are heavy or destructive (e.g. ` + "`R`" + ` rescan walks the filesystem, ` + "`L`" + ` launches a process)._
+
 ## Profiles tab
 
 - ` + "`n`" + ` — new profile     ` + "`d`" + ` — duplicate
-- ` + "`x`" + ` — delete         ` + "`s`" + ` — save
+- ` + "`x`" + ` — delete         ` + "`enter`" + ` — edit / submit Save
+- ` + "`esc`" + ` — cancel editing (prompts to discard unsaved changes)
 - ` + "`L`" + ` — launch directly from selected profile
+- ` + "`ctrl+t`" + ` — toggle Essentials / Advanced sub-tab while editing
 - ` + "`/`" + ` — filter
 
 ## Launcher tab

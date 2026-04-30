@@ -7,14 +7,15 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/list"
+	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/quantmind-br/llama-cpp-loader/internal/domain"
 	"github.com/quantmind-br/llama-cpp-loader/internal/service/processmgr"
 	"github.com/quantmind-br/llama-cpp-loader/internal/service/profilestore"
 	"github.com/quantmind-br/llama-cpp-loader/internal/service/validator"
-	"github.com/quantmind-br/llama-cpp-loader/internal/ui/components"
 	"github.com/quantmind-br/llama-cpp-loader/internal/ui/theme"
 )
 
@@ -30,10 +31,21 @@ type LauncherPage struct {
 
 	background bool
 	status     string
+	statusAt   time.Time
 	running    []domain.RunningInstance
 
 	width, height int
 	loadErr       error
+
+	// Kill confirmation overlay (UIUX-002).
+	confirmKillForm     *huh.Form
+	confirmKillAnswer   *bool
+	confirmKillTargetID int
+
+	// WaitHealthy spinner (UIUX-003). waitingPID > 0 while a launch is
+	// awaiting /health; spin advances on each spinner.TickMsg.
+	spin       spinner.Model
+	waitingPID int
 }
 
 // NewLauncherPage builds a LauncherPage. manager/validator may be nil for
@@ -44,12 +56,14 @@ func NewLauncherPage(store profilestore.Store, manager processmgr.Manager, val v
 	l.Title = "Profiles"
 	l.SetShowHelp(false)
 	l.SetShowStatusBar(false)
+	sp := spinner.New(spinner.WithSpinner(spinner.Dot))
 	return LauncherPage{
 		store:      store,
 		manager:    manager,
 		validator:  val,
 		plist:      l,
 		background: true,
+		spin:       sp,
 	}
 }
 
@@ -123,11 +137,14 @@ func loadProfilesCmd(store profilestore.Store) tea.Cmd {
 
 func (p LauncherPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+
+	// ---- Phase 1: Layout ----
 	case tea.WindowSizeMsg:
 		p.width, p.height = msg.Width, msg.Height
 		p.plist.SetSize(msg.Width/2, msg.Height-6)
 		return p, nil
 
+	// ---- Phase 2: Data loading ----
 	case LauncherProfilesLoadedMsg:
 		if msg.Err != nil {
 			p.loadErr = msg.Err
@@ -141,37 +158,62 @@ func (p LauncherPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		p.plist.SetItems(items)
 		return p, nil
 
+	// ---- Phase 3: Launch lifecycle (launched → wait healthy → done/err) ----
 	case launchedMsg:
 		p.running = append(p.running, msg.inst)
-		p.status = fmt.Sprintf("launched %s pid=%d port=%d", msg.inst.ProfileID, msg.inst.PID, msg.inst.Port)
+		p.waitingPID = msg.inst.PID
+		// In-flight status — no auto-clear timer; terminal events replace it.
+		p.status = fmt.Sprintf("pid=%d port=%d — waiting for /health…", msg.inst.PID, msg.inst.Port)
+		p.statusAt = time.Time{}
 		mgr := p.manager
 		port := msg.inst.Port
 		pid := msg.inst.PID
-		return p, func() tea.Msg {
+		waitCmd := func() tea.Msg {
 			if err := mgr.WaitHealthy(pid, port, 30*time.Second); err != nil {
 				return launchErrMsg{err: fmt.Errorf("pid %d not healthy: %w", pid, err)}
 			}
 			return healthyMsg{pid: pid}
 		}
+		return p, tea.Batch(p.spin.Tick, waitCmd)
 
 	case healthyMsg:
-		p.status = fmt.Sprintf("healthy pid=%d", msg.pid)
+		p.waitingPID = 0
+		p, fc := p.withStatus(fmt.Sprintf("healthy pid=%d", msg.pid))
 		pid := msg.pid
-		return p, func() tea.Msg { return SwitchToMonitorMsg{PID: pid} }
+		return p, tea.Batch(fc, func() tea.Msg { return SwitchToMonitorMsg{PID: pid} })
 
 	case launchErrMsg:
-		p.status = friendlyLaunchError(msg.err)
+		p.waitingPID = 0
+		p, fc := p.withStatus(friendlyLaunchError(msg.err))
+		return p, fc
+
+	// ---- Phase 4: Spinner animation while waiting for health check ----
+	case spinner.TickMsg:
+		if p.waitingPID == 0 {
+			return p, nil
+		}
+		updated, cmd := p.spin.Update(msg)
+		p.spin = updated
+		return p, cmd
+
+	// ---- Phase 5: Flash / status clear ----
+	case flashClearMsg:
+		if msg.tag == "launcher" && msg.at.Equal(p.statusAt) {
+			p.status = ""
+			p.statusAt = time.Time{}
+		}
 		return p, nil
 
+	// ---- Phase 6: External launch request (e.g. from ProfilesPage via [L]) ----
 	case LaunchProfileMsg:
 		if p.manager == nil {
-			p.status = "launch failed: process manager unavailable"
-			return p, nil
+			p, fc := p.withStatus("launch failed: process manager unavailable")
+			return p, fc
 		}
 		selected, err := p.store.Get(msg.ID)
 		if err != nil {
-			p.status = "launch failed: " + err.Error()
-			return p, nil
+			p, fc := p.withStatus("launch failed: " + err.Error())
+			return p, fc
 		}
 		// Refresh the in-memory list so the user sees the profile they
 		// just launched ranked correctly. Best effort — failure here
@@ -189,7 +231,11 @@ func (p LauncherPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return p, p.launchProfileCmd(selected)
 
+	// ---- Phase 7: Key routing ----
 	case tea.KeyMsg:
+		if p.confirmKillForm != nil {
+			return p.updateConfirmKill(msg)
+		}
 		switch msg.String() {
 		case "b":
 			p.background = !p.background
@@ -198,20 +244,7 @@ func (p LauncherPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if len(p.running) == 0 || p.manager == nil {
 				return p, nil
 			}
-			pid := p.running[len(p.running)-1].PID
-			if err := p.manager.Kill(pid); err != nil {
-				p.status = "error: " + err.Error()
-				return p, nil
-			}
-			out := p.running[:0]
-			for _, ri := range p.running {
-				if ri.PID != pid {
-					out = append(out, ri)
-				}
-			}
-			p.running = out
-			p.status = fmt.Sprintf("killed pid=%d", pid)
-			return p, nil
+			return p.askConfirmKill(p.running[len(p.running)-1].PID)
 		case "r":
 			return p, loadProfilesCmd(p.store)
 		case "enter":
@@ -223,9 +256,108 @@ func (p LauncherPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	// Forward non-key messages to the confirm form so huh's internal Cmd→Msg
+	// loop (initial focus, validation, button reveal) lands. The form
+	// transitions to StateCompleted via async nextFieldMsg/nextGroupMsg,
+	// not the original Enter — so finalize is checked here too.
+	if p.confirmKillForm != nil {
+		updated, cmd := p.confirmKillForm.Update(msg)
+		if f, ok := updated.(*huh.Form); ok {
+			p.confirmKillForm = f
+		}
+		if p.confirmKillForm != nil && p.confirmKillForm.State == huh.StateCompleted {
+			var clearCmd tea.Cmd
+			p, clearCmd = p.finalizeConfirmKill()
+			return p, tea.Batch(cmd, clearCmd)
+		}
+		return p, cmd
+	}
+
 	updatedList, cmd := p.plist.Update(msg)
 	p.plist = updatedList
 	return p, cmd
+}
+
+// askConfirmKill builds the kill-confirmation huh form. The actual Kill
+// is deferred until the user picks the affirmative button — see
+// updateConfirmKill.
+func (p LauncherPage) askConfirmKill(pid int) (tea.Model, tea.Cmd) {
+	answer := false
+	p.confirmKillAnswer = &answer
+	p.confirmKillTargetID = pid
+	form := huh.NewForm(huh.NewGroup(
+		huh.NewConfirm().
+			Title(fmt.Sprintf("Kill pid=%d?", pid)).
+			Affirmative("Kill").
+			Negative("Cancel").
+			Value(p.confirmKillAnswer),
+	)).WithShowHelp(false).WithShowErrors(false)
+	p.confirmKillForm = form
+	return p, form.Init()
+}
+
+func (p LauncherPage) updateConfirmKill(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if msg.String() == "esc" {
+		p.confirmKillForm = nil
+		p.confirmKillAnswer = nil
+		p.confirmKillTargetID = 0
+		return p, nil
+	}
+	updated, cmd := p.confirmKillForm.Update(msg)
+	if f, ok := updated.(*huh.Form); ok {
+		p.confirmKillForm = f
+	}
+	if p.confirmKillForm != nil && p.confirmKillForm.State == huh.StateCompleted {
+		var clearCmd tea.Cmd
+		p, clearCmd = p.finalizeConfirmKill()
+		return p, tea.Batch(cmd, clearCmd)
+	}
+	return p, cmd
+}
+
+// finalizeConfirmKill executes the kill (or cancellation) once the confirm
+// form has reached StateCompleted. Exposed as a separate method so tests
+// can drive the affirmative/negative paths without depending on huh's
+// internal keymap. Returns the auto-clear cmd from withStatus so callers
+// can batch it — without it, the kill status would persist indefinitely.
+func (p LauncherPage) finalizeConfirmKill() (LauncherPage, tea.Cmd) {
+	pid := p.confirmKillTargetID
+	affirmative := p.confirmKillAnswer != nil && *p.confirmKillAnswer
+	p.confirmKillForm = nil
+	p.confirmKillAnswer = nil
+	p.confirmKillTargetID = 0
+	if !affirmative {
+		return p.withStatus("kill cancelled")
+	}
+	if err := p.manager.Kill(pid); err != nil {
+		return p.withStatus("error: " + err.Error())
+	}
+	out := p.running[:0]
+	for _, ri := range p.running {
+		if ri.PID != pid {
+			out = append(out, ri)
+		}
+	}
+	p.running = out
+	return p.withStatus(fmt.Sprintf("killed pid=%d", pid))
+}
+
+// IsCapturingInput tells the root model when the page owns global keys —
+// true while a confirm dialog is on screen so its arrows / enter / y/n
+// reach the form instead of being interpreted as tab shortcuts.
+func (p LauncherPage) IsCapturingInput() bool {
+	return p.confirmKillForm != nil
+}
+
+// withStatus sets the terminal status message (post-launch outcome,
+// kill result, validation error) and schedules an auto-clear via
+// flashClearMsg. Use this for terminal states only — the in-flight
+// "waiting for /health…" message must NOT auto-clear or it would erase
+// itself before the health check returns.
+func (p LauncherPage) withStatus(msg string) (LauncherPage, tea.Cmd) {
+	p.status = msg
+	p.statusAt = time.Now()
+	return p, scheduleFlashClear("launcher", p.statusAt)
 }
 
 // launchProfileCmd validates the profile and starts the llama-server
@@ -255,18 +387,23 @@ func (p LauncherPage) launchProfileCmd(selected domain.Profile) tea.Cmd {
 }
 
 func (p LauncherPage) View() string {
+	if p.confirmKillForm != nil {
+		return p.confirmKillForm.View()
+	}
 	if p.loadErr != nil {
 		return theme.Subtitle.Render(fmt.Sprintf("load profiles: %v", p.loadErr))
 	}
-	left := p.plist.View()
+	if len(p.profiles) == 0 && p.status == "" {
+		return theme.Subtitle.Render("(no profiles yet — switch to Profiles [1] to create one)")
+	}
 
-	var right string
+	var rightContent string
 	if it, ok := p.plist.SelectedItem().(profileItem); ok {
 		mode := "Foreground"
 		if p.background {
 			mode = "Background"
 		}
-		right = lipgloss.JoinVertical(lipgloss.Left,
+		rightContent = lipgloss.JoinVertical(lipgloss.Left,
 			theme.Subtitle.Render(it.p.Name),
 			fmt.Sprintf("ID:    %s", it.p.ID),
 			fmt.Sprintf("Model: %s", it.p.Model),
@@ -274,15 +411,21 @@ func (p LauncherPage) View() string {
 			fmt.Sprintf("Mode:  [%s]   (b to toggle)", mode),
 		)
 	} else {
-		right = theme.Subtitle.Render("No profile selected")
+		rightContent = theme.Subtitle.Render("No profile selected")
 	}
 
-	body := lipgloss.JoinHorizontal(lipgloss.Top, left, "  ", right)
-
-	footer := "[b] mode  [enter] launch  [k] kill last  [r] refresh" + components.HelpToken
-	if p.status != "" {
-		footer = p.status + "  |  " + footer
+	leftW := p.width / 2
+	rightW := p.width/2 - 2
+	if leftW < 20 {
+		leftW = 20
 	}
+	if rightW < 20 {
+		rightW = 20
+	}
+	left := theme.Pane.Width(leftW).Render(p.plist.View())
+	right := theme.Pane.Width(rightW).Render(rightContent)
+	body := lipgloss.JoinHorizontal(lipgloss.Top, left, right)
+
 	runningView := "Running: (none)"
 	if len(p.running) > 0 {
 		lines := []string{theme.Subtitle.Render("Running")}
@@ -295,6 +438,26 @@ func (p LauncherPage) View() string {
 		}
 		runningView = strings.Join(lines, "\n")
 	}
+	parts := []string{body, "", runningView}
+	if p.status != "" {
+		statusLine := p.status
+		if p.waitingPID != 0 {
+			statusLine = p.spin.View() + " " + statusLine
+		}
+		style := theme.Subtitle
+		if !p.statusAt.IsZero() && time.Since(p.statusAt) >= flashDimAfter {
+			style = style.Faint(true)
+		}
+		parts = append(parts, style.Render(statusLine))
+	}
 
-	return lipgloss.JoinVertical(lipgloss.Left, body, "", runningView, footer)
+	return lipgloss.JoinVertical(lipgloss.Left, parts...)
+}
+
+// Hints implements ui.HintProvider for the Launcher tab.
+func (p LauncherPage) Hints() string {
+	if p.confirmKillForm != nil {
+		return "[←→] choose  [enter] confirm  [esc] cancel"
+	}
+	return "[b] mode  [enter] launch  [k] kill last  [r] refresh"
 }

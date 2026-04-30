@@ -27,10 +27,12 @@ func NewFSStore(dir string) (*FSStore, error) {
 	return &FSStore{dir: dir}, nil
 }
 
+// path returns the absolute filesystem path for a profile JSON file.
 func (s *FSStore) path(id string) string {
 	return filepath.Join(s.dir, id+".json")
 }
 
+// List returns all valid profiles, ignoring corrupt entries.
 func (s *FSStore) List() ([]domain.Profile, error) {
 	profiles, _, err := s.ListWithDiagnostics()
 	return profiles, err
@@ -67,6 +69,7 @@ func (s *FSStore) ListWithDiagnostics() ([]domain.Profile, []ListDiagnostic, err
 	return profiles, diags, nil
 }
 
+// Get reads a single profile by id. Returns ErrNotFound if the file does not exist.
 func (s *FSStore) Get(id string) (domain.Profile, error) {
 	if id == "" {
 		return domain.Profile{}, ErrInvalidID
@@ -85,6 +88,9 @@ func (s *FSStore) Get(id string) (domain.Profile, error) {
 	return p, nil
 }
 
+// Save persists a profile to disk as JSON. Performs an atomic write
+// (write to temp + rename) to avoid corrupting the file on crash.
+// Fills SchemaVersion, CreatedAt and UpdatedAt if empty.
 func (s *FSStore) Save(p domain.Profile) error {
 	if p.ID == "" {
 		return ErrInvalidID
@@ -128,6 +134,7 @@ func (s *FSStore) MarkLastUsed(id string, at time.Time) error {
 	return s.Save(p)
 }
 
+// Delete removes a profile JSON file from disk.
 func (s *FSStore) Delete(id string) error {
 	if id == "" {
 		return ErrInvalidID
@@ -141,6 +148,8 @@ func (s *FSStore) Delete(id string) error {
 	return nil
 }
 
+// Duplicate clones an existing profile under a new id. Resets timestamps
+// and appends " (copy)" to the name. Returns ErrDuplicateID if newID already exists.
 func (s *FSStore) Duplicate(srcID, newID string) (domain.Profile, error) {
 	if newID == "" {
 		return domain.Profile{}, ErrInvalidID

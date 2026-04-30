@@ -2,16 +2,19 @@ package pages
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/exp/teatest"
 
 	"github.com/quantmind-br/llama-cpp-loader/internal/domain"
 	"github.com/quantmind-br/llama-cpp-loader/internal/service/profilestore"
 	"github.com/quantmind-br/llama-cpp-loader/internal/ui/components"
+	"github.com/quantmind-br/llama-cpp-loader/internal/ui/theme"
 )
 
 func TestProfilesPage_LoadsExistingProfile(t *testing.T) {
@@ -243,16 +246,321 @@ func TestProfilesPage_LKeyEmitsLaunchProfileMsg(t *testing.T) {
 	}
 }
 
-func TestProfilesPage_DetailHintIncludesLaunch(t *testing.T) {
+func TestProfilesPage_FlashAutoClear(t *testing.T) {
 	dir := t.TempDir()
 	store, _ := profilestore.NewFSStore(dir)
 	page := NewProfilesPage(store, domain.FlagSchema{})
-	updated, _ := page.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+
+	page, _ = page.withFlash("hello")
+	if page.flash != "hello" {
+		t.Fatalf("flash = %q, want hello", page.flash)
+	}
+
+	// Stale clear (mismatching at) should be ignored.
+	updated, _ := page.Update(flashClearMsg{tag: "profiles", at: time.Time{}})
 	page = updated.(ProfilesPage)
-	updated, _ = page.Update(loadedMsg{profiles: []domain.Profile{{ID: "demo", Name: "Demo", Args: map[string]any{"port": float64(8080)}}}})
+	if page.flash != "hello" {
+		t.Errorf("stale flashClearMsg erased current flash; flash=%q", page.flash)
+	}
+
+	// Matching clear erases.
+	updated, _ = page.Update(flashClearMsg{tag: "profiles", at: page.flashAt})
 	page = updated.(ProfilesPage)
-	if !strings.Contains(page.View(), "[L] launch") {
-		t.Errorf("detail hint missing [L] launch; got:\n%s", page.View())
+	if page.flash != "" {
+		t.Errorf("matching flashClearMsg should clear; flash=%q", page.flash)
+	}
+}
+
+func TestProfilesPage_FlashRenamedClearTagIgnored(t *testing.T) {
+	dir := t.TempDir()
+	store, _ := profilestore.NewFSStore(dir)
+	page := NewProfilesPage(store, domain.FlagSchema{})
+	page, _ = page.withFlash("hello")
+
+	// flashClearMsg from another page must be ignored.
+	updated, _ := page.Update(flashClearMsg{tag: "models", at: page.flashAt})
+	page = updated.(ProfilesPage)
+	if page.flash != "hello" {
+		t.Errorf("cross-tag flashClearMsg erased flash; flash=%q", page.flash)
+	}
+}
+
+func TestProfilesPage_IntRangeRejectsNonInt(t *testing.T) {
+	v := intRange(0, 100, false)
+	if err := v("abc"); err == nil {
+		t.Errorf("intRange(non-int) returned nil; want error")
+	}
+}
+
+func TestProfilesPage_IntRangeRejectsOutOfBounds(t *testing.T) {
+	v := intRange(0, 100, false)
+	if err := v("999"); err == nil {
+		t.Errorf("intRange(out-of-range) returned nil; want error")
+	}
+}
+
+func TestProfilesPage_IntRangeAllowsEmptyWhenOptional(t *testing.T) {
+	if err := intRange(0, 100, true)(""); err != nil {
+		t.Errorf("intRange(allowEmpty=true)(\"\") returned %v; want nil", err)
+	}
+	if err := intRange(0, 100, false)(""); err == nil {
+		t.Errorf("intRange(allowEmpty=false)(\"\") returned nil; want error")
+	}
+}
+
+func TestProfilesPage_IntRangeAcceptsNegativeOneForNGL(t *testing.T) {
+	v := intRange(-1, 9999, false)
+	if err := v("-1"); err != nil {
+		t.Errorf("intRange(-1,9999)(\"-1\") returned %v; want nil (llama.cpp default)", err)
+	}
+}
+
+func TestProfilesPage_PortValidator(t *testing.T) {
+	v := portValidator()
+	if err := v("99999"); err == nil {
+		t.Errorf("portValidator(99999) returned nil; want error (out of range)")
+	}
+	if err := v("8080"); err != nil {
+		t.Errorf("portValidator(8080) returned %v; want nil", err)
+	}
+	if err := v(""); err == nil {
+		t.Errorf("portValidator(\"\") returned nil; want error (required)")
+	}
+}
+
+func TestProfilesPage_DelegateRendersCorruptInWarnColors(t *testing.T) {
+	dgt := newProfileItemDelegate()
+	l := list.New([]list.Item{corruptItem{id: "broken", err: errors.New("syntax error")}}, dgt, 80, 6)
+
+	var buf strings.Builder
+	dgt.Render(&buf, l, 0, l.Items()[0])
+
+	want := theme.Error.Render("⚠ broken")
+	if !strings.Contains(buf.String(), want) {
+		t.Errorf("delegate output missing styled title %q; got %q", want, buf.String())
+	}
+}
+
+func TestProfilesPage_DelegateDelegatesHealthyRowsToDefault(t *testing.T) {
+	dgt := newProfileItemDelegate()
+	healthy := item{p: domain.Profile{ID: "demo", Name: "Demo"}}
+	l := list.New([]list.Item{healthy}, dgt, 80, 6)
+
+	var buf strings.Builder
+	dgt.Render(&buf, l, 0, healthy)
+	if !strings.Contains(buf.String(), "Demo") {
+		t.Errorf("default delegate output missing %q; got %q", "Demo", buf.String())
+	}
+}
+
+// TestProfilesPage_StartNewResetsEditorSubTabAndFilter ensures that
+// reopening the editor (n / Use-In-New / edit) starts on Essentials with
+// no advanced filter, regardless of what the previous editor session left
+// behind. Regression for the leak where p.subTab and p.advancedFilter
+// persisted across editor lifecycles, surprising the user.
+func TestProfilesPage_StartNewResetsEditorSubTabAndFilter(t *testing.T) {
+	dir := t.TempDir()
+	store, _ := profilestore.NewFSStore(dir)
+	page := NewProfilesPage(store, domain.FlagSchema{})
+
+	// Simulate a previous session that left advanced state behind.
+	page.subTab = subTabAdvanced
+	page.advancedFilter = "stale"
+	page.filterMode = true
+
+	updated, _ := page.startNew()
+	page = updated.(ProfilesPage)
+	if page.subTab != subTabEssentials {
+		t.Errorf("startNew subTab = %v, want subTabEssentials", page.subTab)
+	}
+	if page.advancedFilter != "" {
+		t.Errorf("startNew advancedFilter = %q, want empty", page.advancedFilter)
+	}
+	if page.filterMode {
+		t.Error("startNew filterMode should be false")
+	}
+}
+
+// TestProfilesPage_DeleteCompletesViaAsyncMsgs drives the delete-confirm
+// flow end-to-end through teatest. Regression for the bug where
+// huh.StateCompleted was reached only via async nextFieldMsg/nextGroupMsg
+// arriving in the non-key forwarding path — if that path doesn't check
+// completion + finalize, the form stays referenced and the delete never
+// fires until the user presses another key.
+func TestProfilesPage_DeleteCompletesViaAsyncMsgs(t *testing.T) {
+	dir := t.TempDir()
+	store, _ := profilestore.NewFSStore(dir)
+	_ = store.Save(domain.Profile{
+		ID: "doomed", Name: "Doomed", Model: "/m.gguf",
+		Args: map[string]any{"port": float64(8080)},
+	})
+
+	page := NewProfilesPage(store, domain.FlagSchema{})
+	tm := teatest.NewTestModel(t, page, teatest.WithInitialTermSize(120, 30))
+	tm.Send(tea.WindowSizeMsg{Width: 120, Height: 30})
+
+	// Wait for the profile to render.
+	teatest.WaitFor(t, tm.Output(), func(out []byte) bool {
+		return strings.Contains(string(out), "Doomed")
+	}, teatest.WithDuration(2*time.Second))
+
+	// Press 'x' to open the delete confirm.
+	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	teatest.WaitFor(t, tm.Output(), func(out []byte) bool {
+		return strings.Contains(string(out), "Delete profile doomed?")
+	}, teatest.WithDuration(2*time.Second))
+
+	// Toggle to affirmative (left arrow) and submit.
+	tm.Send(tea.KeyMsg{Type: tea.KeyLeft})
+	tm.Send(tea.KeyMsg{Type: tea.KeyEnter})
+
+	// Without the fix the delete never fires on a single submit; the flash
+	// would not appear until another keypress kicks the loop.
+	teatest.WaitFor(t, tm.Output(), func(out []byte) bool {
+		return strings.Contains(string(out), "deleted doomed")
+	}, teatest.WithDuration(2*time.Second))
+
+	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlC})
+	final := tm.FinalModel(t).(ProfilesPage)
+	if final.confirmDelete {
+		t.Error("confirmDelete flag should be false after async-driven completion")
+	}
+	if final.confirmForm != nil {
+		t.Error("confirmForm should be nil after finalize")
+	}
+	// Profile must actually be gone from the store.
+	if _, err := store.Get("doomed"); err == nil {
+		t.Error("profile 'doomed' still in store after delete")
+	}
+}
+
+func TestProfilesPage_HintsIncludeLaunch(t *testing.T) {
+	dir := t.TempDir()
+	store, _ := profilestore.NewFSStore(dir)
+	page := NewProfilesPage(store, domain.FlagSchema{})
+	hints := page.Hints()
+	if !strings.Contains(hints, "[L] launch") {
+		t.Errorf("list-mode Hints missing [L] launch; got %q", hints)
+	}
+}
+
+func TestProfilesPage_EscWithUnchangedDraftClosesEditor(t *testing.T) {
+	dir := t.TempDir()
+	store, _ := profilestore.NewFSStore(dir)
+	page := NewProfilesPage(store, domain.FlagSchema{})
+
+	// Open a fresh editor.
+	updated, _ := page.startNew()
+	page = updated.(ProfilesPage)
+	if !page.editing {
+		t.Fatal("expected editing after startNew")
+	}
+
+	// Press esc with no edits — should close immediately, no confirm.
+	updated, _ = page.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	page = updated.(ProfilesPage)
+	if page.editing {
+		t.Error("esc with unchanged draft should close editor")
+	}
+	if page.confirmDiscardForm != nil {
+		t.Error("esc with unchanged draft should not open discard confirm")
+	}
+}
+
+func TestProfilesPage_EscWithChangedDraftPromptsDiscard(t *testing.T) {
+	dir := t.TempDir()
+	store, _ := profilestore.NewFSStore(dir)
+	page := NewProfilesPage(store, domain.FlagSchema{})
+	updated, _ := page.startNew()
+	page = updated.(ProfilesPage)
+
+	// Mutate draft to diverge from snapshot.
+	page.draft.Name = "Mutated"
+
+	updated, _ = page.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	page = updated.(ProfilesPage)
+	if page.confirmDiscardForm == nil {
+		t.Fatal("expected discard confirm after esc with mutated draft")
+	}
+	if !page.IsCapturingInput() {
+		t.Fatal("page should capture input while discard confirm is open")
+	}
+
+	// Negative path keeps the editor.
+	*page.confirmDiscardAnswer = false
+	page = page.finalizeConfirmDiscard()
+	if !page.editing {
+		t.Error("negative discard should keep editor open")
+	}
+	if page.draft == nil || page.draft.Name != "Mutated" {
+		t.Error("negative discard should preserve draft mutations")
+	}
+
+	// Re-open confirm and exercise affirmative path.
+	updated, _ = page.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	page = updated.(ProfilesPage)
+	if page.confirmDiscardForm == nil {
+		t.Fatal("expected discard confirm second time")
+	}
+	*page.confirmDiscardAnswer = true
+	page = page.finalizeConfirmDiscard()
+	if page.editing {
+		t.Error("affirmative discard should close editor")
+	}
+	if page.draft != nil {
+		t.Error("affirmative discard should clear draft")
+	}
+}
+
+func TestProfilesPage_DiscardConfirmReceivesInitHandshake(t *testing.T) {
+	dir := t.TempDir()
+	store, _ := profilestore.NewFSStore(dir)
+	page := NewProfilesPage(store, domain.FlagSchema{})
+	updated, _ := page.startNew()
+	page = updated.(ProfilesPage)
+
+	// Mutate draft so esc opens the discard confirm.
+	page.draft.Name = "Mutated"
+	updated, _ = page.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	page = updated.(ProfilesPage)
+	if page.confirmDiscardForm == nil {
+		t.Fatal("expected discard confirm form")
+	}
+
+	// Pump the discard form's Init cmd back through Update.
+	// If non-key messages were wrongly routed to the hidden editor form,
+	// the discard form would miss its focus/size handshake.
+	initCmd := page.confirmDiscardForm.Init()
+	if initCmd != nil {
+		updated, _ = page.Update(initCmd())
+		page = updated.(ProfilesPage)
+	}
+
+	if page.confirmDiscardForm == nil {
+		t.Error("discard confirm was dropped after Init handshake; editor form likely stole it")
+	}
+}
+
+func TestProfilesPage_HintsVaryByMode(t *testing.T) {
+	dir := t.TempDir()
+	store, _ := profilestore.NewFSStore(dir)
+	page := NewProfilesPage(store, domain.FlagSchema{})
+
+	page.editing = true
+	if !strings.Contains(page.Hints(), "[ctrl+t]") {
+		t.Errorf("editing Hints missing [ctrl+t]; got %q", page.Hints())
+	}
+	page.editing = false
+
+	page.pickerActive = true
+	if !strings.Contains(page.Hints(), "[enter] pick") {
+		t.Errorf("picker Hints missing [enter] pick; got %q", page.Hints())
+	}
+	page.pickerActive = false
+
+	page.confirmDelete = true
+	if !strings.Contains(page.Hints(), "[enter] confirm") {
+		t.Errorf("confirm Hints missing [enter] confirm; got %q", page.Hints())
 	}
 }
 
@@ -280,29 +588,6 @@ func TestProfilesPage_IsCapturingInputDuringEditAndPicker(t *testing.T) {
 	}
 }
 
-func TestProfilesPage_FooterMentionsHelp(t *testing.T) {
-	dir := t.TempDir()
-	store, err := profilestore.NewFSStore(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Save(domain.Profile{
-		ID:    "demo",
-		Name:  "Demo",
-		Model: "/m.gguf",
-		Args:  map[string]any{"port": float64(8080)},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	page := NewProfilesPage(store, domain.FlagSchema{})
-	updated, _ := page.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
-	page = updated.(ProfilesPage)
-	updated, _ = page.Update(loadedMsg{profiles: []domain.Profile{{
-		ID: "demo", Name: "Demo", Model: "/m.gguf",
-		Args: map[string]any{"port": float64(8080)},
-	}}})
-	page = updated.(ProfilesPage)
-	if !strings.Contains(page.View(), "[?] help") {
-		t.Errorf("profiles footer missing [?] help; got:\n%s", page.View())
-	}
-}
+// [?] help token is now owned by the global status bar (see
+// ui/root_test.go TestRoot_StatusBarMentionsHelp). Pages publish their
+// own hints via the HintProvider contract — see TestProfilesPage_Hints*.

@@ -29,3 +29,9 @@ func TestRenderHelp_MentionsAllTabs(t *testing.T) {
 		}
 	}
 }
+
+func TestHelpMarkdown_MentionsConvention(t *testing.T) {
+	if !strings.Contains(HelpMarkdown, "Convention: lowercase") {
+		t.Errorf("HelpMarkdown missing letter-case convention sentence")
+	}
+}

@@ -2,6 +2,7 @@ package pages
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"sync/atomic"
@@ -13,6 +14,7 @@ import (
 	"github.com/quantmind-br/llama-cpp-loader/internal/domain"
 	"github.com/quantmind-br/llama-cpp-loader/internal/service/monitor"
 	"github.com/quantmind-br/llama-cpp-loader/internal/service/processmgr"
+	"github.com/quantmind-br/llama-cpp-loader/internal/ui/theme"
 )
 
 type fakeProcMgr struct {
@@ -162,7 +164,7 @@ func TestMonitorPage_MetricsPlaceholderWhenEmpty(t *testing.T) {
 	}
 }
 
-func TestMonitorPage_KKillsSelectedPID(t *testing.T) {
+func TestMonitorPage_KOpensConfirmDoesNotKillImmediately(t *testing.T) {
 	pm := &killTrackingMgr{fakeProcMgr: fakeProcMgr{insts: []domain.RunningInstance{{PID: 7, Port: 8080, LogPath: "/tmp/x.log"}}}}
 	mm := &chanMonMgr{ch: make(chan monitor.MonitorEvent, 8)}
 	p := NewMonitorPage(pm, mm, nil)
@@ -171,8 +173,67 @@ func TestMonitorPage_KKillsSelectedPID(t *testing.T) {
 
 	p, _ = updateAs[*MonitorPage](p, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
 
+	if pm.killed != 0 {
+		t.Fatalf("k should not kill immediately; killed=%d", pm.killed)
+	}
+	if p.confirmKillForm == nil {
+		t.Fatal("expected confirm form after k")
+	}
+	if !p.IsCapturingInput() {
+		t.Fatal("page should capture input while confirm is open")
+	}
+
+	// Esc cancels.
+	p, _ = updateAs[*MonitorPage](p, tea.KeyMsg{Type: tea.KeyEsc})
+	if p.confirmKillForm != nil {
+		t.Fatal("esc should clear confirm form")
+	}
+	if pm.killed != 0 {
+		t.Fatalf("esc should not kill; killed=%d", pm.killed)
+	}
+}
+
+func TestMonitorPage_FinalizeConfirmAffirmativeCallsKill(t *testing.T) {
+	pm := &killTrackingMgr{fakeProcMgr: fakeProcMgr{insts: []domain.RunningInstance{{PID: 7, Port: 8080, LogPath: "/tmp/x.log"}}}}
+	mm := &chanMonMgr{ch: make(chan monitor.MonitorEvent, 8)}
+	p := NewMonitorPage(pm, mm, nil)
+	p.SetSize(120, 30)
+	p, _ = updateAs[*MonitorPage](p, monitorInstancesRefreshedMsg{insts: pm.List()})
+
+	// Open the confirm form via the normal key path.
+	p, _ = updateAs[*MonitorPage](p, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+	if p.confirmKillForm == nil {
+		t.Fatal("expected confirm form after k")
+	}
+	// Drive the affirmative branch via the package-internal helper. This
+	// bypasses huh's confirm key dance which is unreliable in unit tests.
+	*p.confirmKillAnswer = true
+	if cmd := p.finalizeConfirmKill(); cmd == nil {
+		t.Fatal("affirmative finalize should return a refresh Cmd")
+	}
+
 	if pm.killed != 7 {
-		t.Fatalf("expected Kill(7), got Kill(%d)", pm.killed)
+		t.Fatalf("expected Kill(7) after affirmative, got Kill(%d)", pm.killed)
+	}
+	if p.confirmKillForm != nil {
+		t.Fatal("confirm form should be cleared after finalize")
+	}
+}
+
+func TestMonitorPage_FinalizeConfirmNegativeNoKill(t *testing.T) {
+	pm := &killTrackingMgr{fakeProcMgr: fakeProcMgr{insts: []domain.RunningInstance{{PID: 7, Port: 8080, LogPath: "/tmp/x.log"}}}}
+	mm := &chanMonMgr{ch: make(chan monitor.MonitorEvent, 8)}
+	p := NewMonitorPage(pm, mm, nil)
+	p.SetSize(120, 30)
+	p, _ = updateAs[*MonitorPage](p, monitorInstancesRefreshedMsg{insts: pm.List()})
+	p, _ = updateAs[*MonitorPage](p, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+
+	*p.confirmKillAnswer = false
+	if cmd := p.finalizeConfirmKill(); cmd != nil {
+		t.Errorf("negative finalize should return nil; got %v", cmd)
+	}
+	if pm.killed != 0 {
+		t.Errorf("negative finalize should not kill; killed=%d", pm.killed)
 	}
 }
 
@@ -183,7 +244,7 @@ type killTrackingMgr struct {
 
 func (m *killTrackingMgr) Kill(pid int) error { m.killed = pid; return nil }
 
-func TestMonitorPage_KKillCancelsOrphanSub(t *testing.T) {
+func TestMonitorPage_OrphanSubCleanedOnRefresh(t *testing.T) {
 	var cancelCalled int32
 	mm := &countingMonMgr{
 		ch:       make(chan monitor.MonitorEvent, 8),
@@ -192,28 +253,15 @@ func TestMonitorPage_KKillCancelsOrphanSub(t *testing.T) {
 	pm := &killTrackingMgr{fakeProcMgr: fakeProcMgr{insts: []domain.RunningInstance{{PID: 7, Port: 8080, LogPath: "/tmp/x.log"}}}}
 	p := NewMonitorPage(pm, mm, nil)
 	p.SetSize(120, 30)
+	// Initial refresh creates a subscription for pid 7.
 	p, _ = updateAs[*MonitorPage](p, monitorInstancesRefreshedMsg{insts: pm.List()})
-
-	// Press k. Expect kill + a refresh cmd.
-	_, cmd := p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
-	if cmd == nil {
-		t.Fatal("expected refresh cmd after k, got nil")
+	if _, ok := p.subs[7]; !ok {
+		t.Fatal("expected sub for pid 7 after initial refresh")
 	}
 
-	// Simulate the manager removing the killed pid (i.e., List() now empty).
+	// Manager-side the pid is gone (e.g., killed externally or crashed).
 	pm.fakeProcMgr.insts = nil
-	// Pump the refresh msg back through Update.
-	if msg := cmd(); msg != nil {
-		// cmd from k might be tea.Batch — drill in if needed.
-		switch tm := msg.(type) {
-		case monitorInstancesRefreshedMsg:
-			p, _ = updateAs[*MonitorPage](p, tm)
-		default:
-			// tea.Batch returns a BatchMsg; for this test we manually
-			// fire the refresh with the new instance list.
-			p, _ = updateAs[*MonitorPage](p, monitorInstancesRefreshedMsg{insts: pm.List()})
-		}
-	}
+	p, _ = updateAs[*MonitorPage](p, monitorInstancesRefreshedMsg{insts: pm.List()})
 
 	// Cancel runs asynchronously off the UI thread; poll briefly.
 	for i := 0; i < 100 && atomic.LoadInt32(&cancelCalled) == 0; i++ {
@@ -302,13 +350,8 @@ func TestMonitorPage_HandlesWindowSize(t *testing.T) {
 	}
 }
 
-func TestMonitorPage_RTriggersRestart(t *testing.T) {
-	prof := domain.Profile{
-		ID:    "qwen",
-		Name:  "Qwen",
-		Model: "/tmp/x.gguf",
-		Args:  map[string]any{"port": 8080.0},
-	}
+func TestMonitorPage_ROpensRestartConfirm(t *testing.T) {
+	prof := domain.Profile{ID: "qwen", Name: "Qwen", Model: "/tmp/x.gguf", Args: map[string]any{"port": 8080.0}}
 	psk := &fakeProfileStore{p: prof}
 	pm := &restartTrackingMgr{
 		insts:   []domain.RunningInstance{{ProfileID: "qwen", PID: 100, Port: 8080, LogPath: "/tmp/a.log", Background: true}},
@@ -319,13 +362,54 @@ func TestMonitorPage_RTriggersRestart(t *testing.T) {
 	p := NewMonitorPage(pm, mm, psk)
 	p, _ = updateAs[*MonitorPage](p, monitorInstancesRefreshedMsg{insts: pm.List()})
 
-	// Press 'r' on the selected (only) row.
-	_, cmd := p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
-	if cmd == nil {
-		t.Fatal("r did not produce a Cmd")
+	p, _ = updateAs[*MonitorPage](p, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+
+	if p.confirmRestartForm == nil {
+		t.Fatal("expected restart confirm form after r")
 	}
-	// Run the cmd: kill + launch should happen synchronously inside it.
-	_ = cmd()
+	if !p.IsCapturingInput() {
+		t.Fatal("page should capture input while restart confirm is open")
+	}
+
+	// Esc cancels.
+	p, _ = updateAs[*MonitorPage](p, tea.KeyMsg{Type: tea.KeyEsc})
+	if p.confirmRestartForm != nil {
+		t.Fatal("esc should clear restart confirm form")
+	}
+	if pm.killedPID != 0 {
+		t.Fatalf("esc should not kill; killed=%d", pm.killedPID)
+	}
+}
+
+func TestMonitorPage_RestartConfirmAffirmativeKillsAndLaunches(t *testing.T) {
+	prof := domain.Profile{ID: "qwen", Name: "Qwen", Model: "/tmp/x.gguf", Args: map[string]any{"port": 8080.0}}
+	psk := &fakeProfileStore{p: prof}
+	pm := &restartTrackingMgr{
+		insts:   []domain.RunningInstance{{ProfileID: "qwen", PID: 100, Port: 8080, LogPath: "/tmp/a.log", Background: true}},
+		newPID:  200,
+		newPort: 8080,
+	}
+	mm := &fakeMonMgr{}
+	p := NewMonitorPage(pm, mm, psk)
+	p, _ = updateAs[*MonitorPage](p, monitorInstancesRefreshedMsg{insts: pm.List()})
+
+	p, _ = updateAs[*MonitorPage](p, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	if p.confirmRestartForm == nil {
+		t.Fatal("expected restart confirm form")
+	}
+
+	*p.confirmRestartAnswer = true
+	cmd := p.finalizeConfirmRestart()
+	if cmd == nil {
+		t.Fatal("affirmative finalize should return a Cmd")
+	}
+	msg := cmd()
+	if rr, ok := msg.(restartResultMsg); !ok {
+		t.Fatalf("msg type = %T, want restartResultMsg", msg)
+	} else if rr.err != nil {
+		t.Fatalf("restartResultMsg.err = %v", rr.err)
+	}
+
 	if pm.killedPID != 100 {
 		t.Errorf("killedPID = %d, want 100", pm.killedPID)
 	}
@@ -337,73 +421,101 @@ func TestMonitorPage_RTriggersRestart(t *testing.T) {
 	}
 }
 
-func TestMonitorPage_RTriggersRestartForeground(t *testing.T) {
+func TestMonitorPage_RestartConfirmNegativeNoAction(t *testing.T) {
 	prof := domain.Profile{ID: "qwen", Name: "Qwen", Model: "/tmp/x.gguf", Args: map[string]any{"port": 8080.0}}
 	psk := &fakeProfileStore{p: prof}
 	pm := &restartTrackingMgr{
-		// Background: false (zero-value) → restartCmd should pick LaunchForeground.
-		insts:   []domain.RunningInstance{{ProfileID: "qwen", PID: 100, Port: 8080, LogPath: "/tmp/a.log"}},
+		insts:   []domain.RunningInstance{{ProfileID: "qwen", PID: 100, Port: 8080, LogPath: "/tmp/a.log", Background: true}},
 		newPID:  200,
 		newPort: 8080,
 	}
 	mm := &fakeMonMgr{}
 	p := NewMonitorPage(pm, mm, psk)
 	p, _ = updateAs[*MonitorPage](p, monitorInstancesRefreshedMsg{insts: pm.List()})
+	p, _ = updateAs[*MonitorPage](p, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
 
-	_, cmd := p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
-	if cmd == nil {
-		t.Fatal("r did not produce a Cmd")
+	*p.confirmRestartAnswer = false
+	if cmd := p.finalizeConfirmRestart(); cmd != nil {
+		t.Errorf("negative finalize should return nil; got %v", cmd)
 	}
-	_ = cmd()
+	if pm.killedPID != 0 {
+		t.Errorf("negative finalize should not kill; killed=%d", pm.killedPID)
+	}
+}
+
+func TestMonitorPage_RestartConfirmForegroundPreservesMode(t *testing.T) {
+	prof := domain.Profile{ID: "qwen", Name: "Qwen", Model: "/tmp/x.gguf", Args: map[string]any{"port": 8080.0}}
+	psk := &fakeProfileStore{p: prof}
+	pm := &restartTrackingMgr{
+		insts:   []domain.RunningInstance{{ProfileID: "qwen", PID: 100, Port: 8080, LogPath: "/tmp/a.log"}}, // Background: false
+		newPID:  200,
+		newPort: 8080,
+	}
+	mm := &fakeMonMgr{}
+	p := NewMonitorPage(pm, mm, psk)
+	p, _ = updateAs[*MonitorPage](p, monitorInstancesRefreshedMsg{insts: pm.List()})
+	p, _ = updateAs[*MonitorPage](p, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+
+	*p.confirmRestartAnswer = true
+	cmd := p.finalizeConfirmRestart()
+	if cmd == nil {
+		t.Fatal("affirmative finalize should return a Cmd")
+	}
+	msg := cmd()
+	if rr, ok := msg.(restartResultMsg); !ok {
+		t.Fatalf("msg type = %T, want restartResultMsg", msg)
+	} else if rr.err != nil {
+		t.Fatalf("restartResultMsg.err = %v", rr.err)
+	}
 	if pm.launchMode != processmgr.LaunchForeground {
 		t.Errorf("launchMode = %v, want LaunchForeground", pm.launchMode)
 	}
 }
 
-func TestMonitorPage_RFallsBackToKillOnlyWhenStoreNil(t *testing.T) {
+func TestMonitorPage_RFlashWhenStoreNil(t *testing.T) {
 	pm := &restartTrackingMgr{
-		insts:   []domain.RunningInstance{{ProfileID: "qwen", PID: 100, Port: 8080, LogPath: "/tmp/a.log", Background: true}},
-		newPID:  200,
-		newPort: 8080,
+		insts: []domain.RunningInstance{{ProfileID: "qwen", PID: 100, Port: 8080, LogPath: "/tmp/a.log", Background: true}},
 	}
 	mm := &fakeMonMgr{}
 	p := NewMonitorPage(pm, mm, nil) // store nil
 	p, _ = updateAs[*MonitorPage](p, monitorInstancesRefreshedMsg{insts: pm.List()})
 
-	_, cmd := p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
-	if cmd == nil {
-		t.Fatal("r did not produce a Cmd")
+	p, _ = updateAs[*MonitorPage](p, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	if p.confirmRestartForm != nil {
+		t.Fatal("nil store should not open confirm form")
 	}
-	_ = cmd()
-	if pm.killedPID != 100 {
-		t.Errorf("killedPID = %d, want 100", pm.killedPID)
-	}
-	if pm.launchedID != "" {
-		t.Errorf("launchedID = %q, want empty (no Launch should run with nil store)", pm.launchedID)
+	if !strings.Contains(p.flash, "store not available") {
+		t.Errorf("expected flash about missing store; got %q", p.flash)
 	}
 }
 
-func TestMonitorPage_RFallsBackWhenProfileGetErrors(t *testing.T) {
+func TestMonitorPage_RFlashWhenProfileMissing(t *testing.T) {
 	psk := &fakeProfileStore{err: errors.New("profile vanished")}
 	pm := &restartTrackingMgr{
-		insts:   []domain.RunningInstance{{ProfileID: "qwen", PID: 100, Port: 8080, LogPath: "/tmp/a.log", Background: true}},
-		newPID:  200,
-		newPort: 8080,
+		insts: []domain.RunningInstance{{ProfileID: "qwen", PID: 100, Port: 8080, LogPath: "/tmp/a.log", Background: true}},
 	}
 	mm := &fakeMonMgr{}
 	p := NewMonitorPage(pm, mm, psk)
 	p, _ = updateAs[*MonitorPage](p, monitorInstancesRefreshedMsg{insts: pm.List()})
 
-	_, cmd := p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
-	if cmd == nil {
-		t.Fatal("r did not produce a Cmd")
+	p, _ = updateAs[*MonitorPage](p, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	if p.confirmRestartForm != nil {
+		t.Fatal("missing profile should not open confirm form")
 	}
-	_ = cmd()
-	if pm.killedPID != 100 {
-		t.Errorf("killedPID = %d, want 100", pm.killedPID)
+	if !strings.Contains(p.flash, "not found") {
+		t.Errorf("expected flash about missing profile; got %q", p.flash)
 	}
-	if pm.launchedID != "" {
-		t.Errorf("launchedID = %q, want empty (no Launch should run when Get errors)", pm.launchedID)
+}
+
+func TestMonitorPage_RestartResultMsgSetsFlashOnError(t *testing.T) {
+	pm := &fakeProcMgr{}
+	mm := fakeMonMgr{}
+	p := NewMonitorPage(pm, mm, nil)
+	p.SetSize(120, 30)
+
+	p, _ = updateAs[*MonitorPage](p, restartResultMsg{pid: 42, err: errors.New("kill refused")})
+	if !strings.Contains(p.flash, "kill refused") {
+		t.Errorf("expected flash to contain error; got %q", p.flash)
 	}
 }
 
@@ -511,15 +623,196 @@ func TestMonitorPage_CancelOrphanIsAsync(t *testing.T) {
 	}
 }
 
-func TestMonitorPage_FooterShowsHints(t *testing.T) {
+func TestMonitorPage_RowShowsUptime(t *testing.T) {
+	started := time.Now().Add(-3*time.Minute - 12*time.Second)
+	pm := &fakeProcMgr{insts: []domain.RunningInstance{{PID: 9, Port: 8080, StartedAt: started, LogPath: "/tmp/z.log"}}}
+	mm := fakeMonMgr{}
+	p := NewMonitorPage(pm, mm, nil)
+	p.SetSize(120, 30)
+	p, _ = updateAs[*MonitorPage](p, monitorInstancesRefreshedMsg{insts: pm.List()})
+
+	rows := p.tbl.Rows()
+	if len(rows) != 1 {
+		t.Fatalf("rows = %d, want 1", len(rows))
+	}
+	if rows[0][3] != "3m12s" {
+		t.Errorf("uptime cell = %q, want %q", rows[0][3], "3m12s")
+	}
+}
+
+func TestMonitorPage_RowShowsVRAMAndTokens(t *testing.T) {
+	pm := &fakeProcMgr{insts: []domain.RunningInstance{{PID: 7, Port: 8080, StartedAt: time.Now(), LogPath: "/tmp/x.log"}}}
+	mm := fakeMonMgr{}
+	p := NewMonitorPage(pm, mm, nil)
+	p.SetSize(120, 30)
+	p, _ = updateAs[*MonitorPage](p, monitorInstancesRefreshedMsg{insts: pm.List()})
+
+	// Inject a synthetic subState so the next refresh picks up the metrics.
+	st := p.subs[7]
+	if st == nil {
+		t.Fatalf("expected subState for pid 7 after refresh")
+	}
+	st.gpu = monitor.GPUStats{VRAMUsedMB: 1024, VRAMTotalMB: 24576}
+	st.mets = monitor.Metrics{TokensPerSec: []float64{10.5, 12.3}}
+
+	p, _ = updateAs[*MonitorPage](p, monitorInstancesRefreshedMsg{insts: pm.List()})
+	rows := p.tbl.Rows()
+	if rows[0][4] != "1024/24576MB" {
+		t.Errorf("vram cell = %q, want %q", rows[0][4], "1024/24576MB")
+	}
+	if rows[0][5] != "12.3" {
+		t.Errorf("tokens cell = %q, want %q", rows[0][5], "12.3")
+	}
+}
+
+func TestMonitorPage_RowFallbackDashesWhenNoState(t *testing.T) {
+	pm := &fakeProcMgr{insts: []domain.RunningInstance{{PID: 1, Port: 8080, StartedAt: time.Time{}, LogPath: "/tmp/x.log"}}}
+	mm := fakeMonMgr{}
+	p := NewMonitorPage(pm, mm, nil)
+	p.SetSize(120, 30)
+	p, _ = updateAs[*MonitorPage](p, monitorInstancesRefreshedMsg{insts: pm.List()})
+	rows := p.tbl.Rows()
+	if rows[0][3] != "--" || rows[0][4] != "--" || rows[0][5] != "--" {
+		t.Errorf("fallback cells = %q/%q/%q, want all '--'", rows[0][3], rows[0][4], rows[0][5])
+	}
+}
+
+func TestMonitorPage_CrashedRowStyledViaThemeError(t *testing.T) {
+	pm := &fakeProcMgr{insts: []domain.RunningInstance{{PID: 13, Port: 8080, ProfileID: "p1", Crashed: true, LogPath: "/tmp/x.log"}}}
+	mm := fakeMonMgr{}
+	p := NewMonitorPage(pm, mm, nil)
+	p.SetSize(120, 30)
+	p, _ = updateAs[*MonitorPage](p, monitorInstancesRefreshedMsg{insts: pm.List()})
+
+	rows := p.tbl.Rows()
+	if len(rows) != 1 {
+		t.Fatalf("rows = %d, want 1", len(rows))
+	}
+	if rows[0][0] != theme.Error.Render("✗ 13") {
+		t.Errorf("crashed pid cell not styled via theme.Error; got %q want %q", rows[0][0], theme.Error.Render("✗ 13"))
+	}
+	if !strings.Contains(rows[0][2], "crashed") {
+		t.Errorf("profile cell should mention crashed; got %q", rows[0][2])
+	}
+}
+
+func TestMonitorPage_HealthyRowUnstyled(t *testing.T) {
+	pm := &fakeProcMgr{insts: []domain.RunningInstance{{PID: 13, Port: 8080, ProfileID: "p1", LogPath: "/tmp/x.log"}}}
+	mm := fakeMonMgr{}
+	p := NewMonitorPage(pm, mm, nil)
+	p.SetSize(120, 30)
+	p, _ = updateAs[*MonitorPage](p, monitorInstancesRefreshedMsg{insts: pm.List()})
+
+	rows := p.tbl.Rows()
+	if rows[0][0] != "13" {
+		t.Errorf("healthy pid cell should be plain %q; got %q", "13", rows[0][0])
+	}
+}
+
+func TestMonitorPage_SelectedPIDParsesAcrossANSI(t *testing.T) {
+	pm := &fakeProcMgr{insts: []domain.RunningInstance{{PID: 13, Port: 8080, ProfileID: "p1", Crashed: true, LogPath: "/tmp/x.log"}}}
+	mm := fakeMonMgr{}
+	p := NewMonitorPage(pm, mm, nil)
+	p.SetSize(120, 30)
+	p, _ = updateAs[*MonitorPage](p, monitorInstancesRefreshedMsg{insts: pm.List()})
+
+	if got := p.selectedPID(); got != 13 {
+		t.Errorf("selectedPID = %d, want 13 (despite ANSI)", got)
+	}
+}
+
+func TestMonitorPage_EmptyStateHint(t *testing.T) {
+	pm := &fakeProcMgr{insts: nil}
+	mm := fakeMonMgr{}
+	p := NewMonitorPage(pm, mm, nil)
+	p.SetSize(120, 30)
+	p, _ = updateAs[*MonitorPage](p, monitorInstancesRefreshedMsg{insts: pm.List()})
+
+	out := p.View()
+	if !strings.Contains(out, "no instances running") {
+		t.Errorf("empty Monitor view missing hint; got:\n%s", out)
+	}
+}
+
+func TestMonitorPage_SubViewTabsHighlightActive(t *testing.T) {
+	pm := &fakeProcMgr{insts: []domain.RunningInstance{{PID: 1, Port: 8080, LogPath: "/tmp/x.log"}}}
+	mm := &chanMonMgr{ch: make(chan monitor.MonitorEvent, 8)}
+	p := NewMonitorPage(pm, mm, nil)
+	p.SetSize(120, 30)
+	p, _ = updateAs[*MonitorPage](p, monitorInstancesRefreshedMsg{insts: pm.List()})
+
+	if got := renderSubViewTabs(SubViewLogs); got != theme.TabActive.Render("Logs")+theme.Subtitle.Render(" │ ")+theme.TabInactive.Render("Slots")+theme.Subtitle.Render(" │ ")+theme.TabInactive.Render("Metrics") {
+		t.Errorf("renderSubViewTabs(Logs) shape mismatch; got %q", got)
+	}
+
+	out := p.View()
+	if !strings.Contains(out, theme.TabActive.Render("Logs")) {
+		t.Errorf("view missing active Logs tab; got:\n%s", out)
+	}
+
+	// Cycle.
+	p, _ = updateAs[*MonitorPage](p, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'v'}})
+	out = p.View()
+	if !strings.Contains(out, theme.TabActive.Render("Slots")) {
+		t.Errorf("view missing active Slots tab after [v]; got:\n%s", out)
+	}
+}
+
+func TestMonitorPage_LogsShowingNofMFooter(t *testing.T) {
+	pm := &fakeProcMgr{insts: []domain.RunningInstance{{PID: 1, Port: 8080, LogPath: "/tmp/x.log"}}}
+	mm := &chanMonMgr{ch: make(chan monitor.MonitorEvent, 8)}
+	p := NewMonitorPage(pm, mm, nil)
+	p.SetSize(120, 30)
+	p, _ = updateAs[*MonitorPage](p, monitorInstancesRefreshedMsg{insts: pm.List()})
+
+	// 5 lines — footer absent.
+	st := p.subs[1]
+	st.logs = []string{"a", "b", "c", "d", "e"}
+	if strings.Contains(p.View(), "showing last 10") {
+		t.Errorf("5-log view should not show count footer; got:\n%s", p.View())
+	}
+
+	// 11 lines — footer present.
+	st.logs = make([]string, 11)
+	for i := range st.logs {
+		st.logs[i] = fmt.Sprintf("line %d", i)
+	}
+	if !strings.Contains(p.View(), "showing last 10 of 11") {
+		t.Errorf("11-log view should show count footer; got:\n%s", p.View())
+	}
+}
+
+func TestMonitorPage_PausedIndicator(t *testing.T) {
+	pm := &fakeProcMgr{insts: []domain.RunningInstance{{PID: 1, Port: 8080, LogPath: "/tmp/x.log"}}}
+	mm := &chanMonMgr{ch: make(chan monitor.MonitorEvent, 8)}
+	p := NewMonitorPage(pm, mm, nil)
+	p.SetSize(120, 30)
+	p, _ = updateAs[*MonitorPage](p, monitorInstancesRefreshedMsg{insts: pm.List()})
+
+	if strings.Contains(p.View(), "PAUSED") {
+		t.Fatalf("idle view should not contain PAUSED; got:\n%s", p.View())
+	}
+
+	p, _ = updateAs[*MonitorPage](p, tea.KeyMsg{Type: tea.KeySpace})
+	if !strings.Contains(p.View(), "PAUSED") {
+		t.Errorf("paused view missing PAUSED; got:\n%s", p.View())
+	}
+
+	p, _ = updateAs[*MonitorPage](p, tea.KeyMsg{Type: tea.KeySpace})
+	if strings.Contains(p.View(), "PAUSED") {
+		t.Errorf("resumed view still contains PAUSED; got:\n%s", p.View())
+	}
+}
+
+func TestMonitorPage_HintsListPageKeys(t *testing.T) {
 	pm := &fakeProcMgr{insts: []domain.RunningInstance{{PID: 1, Port: 8080, LogPath: "/tmp/x.log"}}}
 	mm := &fakeMonMgr{}
 	p := NewMonitorPage(pm, mm, nil)
 	p, _ = updateAs[*MonitorPage](p, monitorInstancesRefreshedMsg{insts: pm.List()})
-	out := p.View()
-	for _, want := range []string{"[v]", "[k]", "[r]", "[Space]", "[?]"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("footer missing %q; got:\n%s", want, out)
+	hints := p.Hints()
+	for _, want := range []string{"[v]", "[k]", "[r]", "[Space]"} {
+		if !strings.Contains(hints, want) {
+			t.Errorf("Hints missing %q; got %q", want, hints)
 		}
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/viper"
 )
@@ -75,7 +76,25 @@ func LoadFrom(path string) (AppConfig, error) {
 	if err := v.Unmarshal(&cfg); err != nil {
 		return AppConfig{}, fmt.Errorf("unmarshal config: %w", err)
 	}
+	cfg.Paths.ProfilesDir = expandTilde(cfg.Paths.ProfilesDir)
+	cfg.Paths.LogDir = expandTilde(cfg.Paths.LogDir)
+	cfg.Paths.StateDir = expandTilde(cfg.Paths.StateDir)
+	for i, p := range cfg.Models.SearchPaths {
+		cfg.Models.SearchPaths[i] = expandTilde(p)
+	}
 	return cfg, nil
+}
+
+// expandTilde replaces a leading "~" with the user's home directory.
+func expandTilde(path string) string {
+	if path == "" || !strings.HasPrefix(path, "~") {
+		return path
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return path
+	}
+	return filepath.Join(home, strings.TrimPrefix(path, "~"))
 }
 
 func applyDefaults(v *viper.Viper) {

@@ -59,6 +59,17 @@ type Reloader interface {
 	Reload() tea.Cmd
 }
 
+// HintProvider is the optional contract a page implements to publish
+// page-local key hints. The root reads it after every tab activation
+// and key event, then concatenates with the global hints into the
+// status bar — pages no longer render their own footer strings.
+type HintProvider interface {
+	Hints() string
+}
+
+// globalHints is the prefix shown in every status bar line.
+const globalHints = "[1-4] tabs  [tab] next  [q] quit" + components.HelpToken
+
 // bootBlocker carrega o conteúdo de um modal bloqueante exibido sobre toda a UI.
 type bootBlocker struct {
 	title string
@@ -87,7 +98,7 @@ func NewRoot(initial Tab) RootModel {
 			pages.Placeholder{TabName: TabModels.Title()},
 		},
 		active: initial,
-		status: components.StatusBar{Hints: "[1-4] tabs  [tab] next  [q] quit" + components.HelpToken},
+		status: components.StatusBar{Hints: globalHints},
 	}
 }
 
@@ -194,6 +205,7 @@ func (m RootModel) handleResize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, cmd)
 		}
 	}
+	m.recomputeHints()
 	return m, tea.Batch(cmds...)
 }
 
@@ -204,6 +216,7 @@ func (m RootModel) handleSwitchToMonitor(msg pages.SwitchToMonitorMsg) (tea.Mode
 	m.active = TabMonitor
 	updated, cmd := m.pages[TabMonitor].Update(pages.MonitorSelectPIDMsg{PID: msg.PID})
 	m.pages[TabMonitor] = updated
+	m.recomputeHints()
 	return m, cmd
 }
 
@@ -240,7 +253,12 @@ func (m RootModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.activate((m.active + 3) % 4)
 		}
 	}
-	return m.forwardToActivePage(msg)
+	updated, cmd := m.forwardToActivePage(msg)
+	if rm, ok := updated.(RootModel); ok {
+		rm.recomputeHints()
+		return rm, cmd
+	}
+	return updated, cmd
 }
 
 // handleHelpKey runs while the help modal is on screen: `?` and `esc` close
@@ -262,6 +280,7 @@ func (m RootModel) activateAndForward(t Tab, msg tea.Msg) (tea.Model, tea.Cmd) {
 	m.active = t
 	updated, cmd := m.pages[t].Update(msg)
 	m.pages[t] = updated
+	m.recomputeHints()
 	return m, cmd
 }
 
@@ -281,7 +300,10 @@ func (m RootModel) forwardToActivePage(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // broadcast delivers cmd→msg returns from background pipelines (model
 // scanner, monitor ticks) to every page so the owning page receives them
-// even when it isn't active.
+// even when it isn't active. Also refreshes the status-bar hints because
+// async msgs (e.g. huh form transitions to StateCompleted via
+// nextFieldMsg / nextGroupMsg) can change what the active page exposes
+// via HintProvider.
 func (m RootModel) broadcast(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 	for i, p := range m.pages {
@@ -291,6 +313,7 @@ func (m RootModel) broadcast(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, cmd)
 		}
 	}
+	m.recomputeHints()
 	return m, tea.Batch(cmds...)
 }
 
@@ -316,10 +339,25 @@ func (m RootModel) View() string {
 // external file changes without requiring a TUI restart.
 func (m RootModel) activate(t Tab) (tea.Model, tea.Cmd) {
 	m.active = t
+	m.recomputeHints()
 	if r, ok := m.pages[t].(Reloader); ok {
 		return m, r.Reload()
 	}
 	return m, nil
+}
+
+// recomputeHints reads page-local hints (when the active page implements
+// HintProvider) and updates the status bar to globalHints + " | " +
+// page hints. Called after every page state change so the status footer
+// always reflects what the user can do right now.
+func (m *RootModel) recomputeHints() {
+	if h, ok := m.pages[m.active].(HintProvider); ok {
+		if ph := h.Hints(); ph != "" {
+			m.status.Hints = globalHints + " | " + ph
+			return
+		}
+	}
+	m.status.Hints = globalHints
 }
 
 func (m RootModel) activePageCapturesInput() bool {
@@ -330,8 +368,12 @@ func (m RootModel) activePageCapturesInput() bool {
 }
 
 func (m RootModel) renderTabs() string {
-	parts := make([]string, 0, 4)
+	sep := theme.Subtitle.Render(" │ ")
+	parts := make([]string, 0, 8)
 	for i := Tab(0); i < 4; i++ {
+		if i > 0 {
+			parts = append(parts, sep)
+		}
 		title := fmt.Sprintf("%d %s", int(i)+1, i.Title())
 		if i == m.active {
 			parts = append(parts, theme.TabActive.Render(title))

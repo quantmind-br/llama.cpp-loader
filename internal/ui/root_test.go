@@ -212,8 +212,8 @@ func (c *capturingPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	return c, nil
 }
-func (c *capturingPage) View() string             { return "captured" }
-func (c *capturingPage) IsCapturingInput() bool   { return c.captured }
+func (c *capturingPage) View() string           { return "captured" }
+func (c *capturingPage) IsCapturingInput() bool { return c.captured }
 
 func TestRoot_TabPassesThroughWhenPageCapturesInput(t *testing.T) {
 	cap := &capturingPage{captured: true}
@@ -317,6 +317,59 @@ func TestRoot_TabSwitchesWhenPageDoesNotCapture(t *testing.T) {
 	}
 }
 
+func TestRoot_ModelsFilterDoesNotLeakQ(t *testing.T) {
+	cap := &capturingPage{captured: true}
+	r := NewRoot(TabModels).
+		WithProfilesPage(pages.Placeholder{TabName: "P"}).
+		WithLauncherPage(pages.Placeholder{TabName: "L"}).
+		WithMonitorPage(pages.Placeholder{TabName: "Mo"}).
+		WithModelsPage(cap)
+
+	_, cmd := r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	if cmd != nil {
+		t.Errorf("q produced cmd while models filter captures input; want nil (key forwarded)")
+	}
+	if len(cap.keys) != 1 || cap.keys[0] != "q" {
+		t.Errorf("page did not receive q; keys=%v", cap.keys)
+	}
+}
+
+func TestRoot_ModelsFilterDoesNotLeakQuestionMark(t *testing.T) {
+	cap := &capturingPage{captured: true}
+	r := NewRoot(TabModels).
+		WithProfilesPage(pages.Placeholder{TabName: "P"}).
+		WithLauncherPage(pages.Placeholder{TabName: "L"}).
+		WithMonitorPage(pages.Placeholder{TabName: "Mo"}).
+		WithModelsPage(cap)
+
+	updated, _ := r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+	rm := updated.(RootModel)
+	if rm.helpOpen {
+		t.Errorf("help opened despite models filter capturing input")
+	}
+	if len(cap.keys) != 1 || cap.keys[0] != "?" {
+		t.Errorf("page did not receive ?; keys=%v", cap.keys)
+	}
+}
+
+func TestRoot_ModelsFilterDoesNotLeakNumberKeys(t *testing.T) {
+	cap := &capturingPage{captured: true}
+	r := NewRoot(TabModels).
+		WithProfilesPage(pages.Placeholder{TabName: "P"}).
+		WithLauncherPage(pages.Placeholder{TabName: "L"}).
+		WithMonitorPage(pages.Placeholder{TabName: "Mo"}).
+		WithModelsPage(cap)
+
+	updated, _ := r.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'1'}})
+	rm := updated.(RootModel)
+	if rm.active != TabModels {
+		t.Errorf("active = %v, want still TabModels (filter captures input)", rm.active)
+	}
+	if len(cap.keys) != 1 || cap.keys[0] != "1" {
+		t.Errorf("page did not receive '1'; keys=%v", cap.keys)
+	}
+}
+
 func TestRoot_RoutesLaunchProfileMsg(t *testing.T) {
 	dir := t.TempDir()
 	store, _ := profilestore.NewFSStore(dir)
@@ -330,6 +383,18 @@ func TestRoot_RoutesLaunchProfileMsg(t *testing.T) {
 	}
 }
 
+func TestRoot_TabStripContainsSeparator(t *testing.T) {
+	r := NewRoot(TabProfiles).
+		WithProfilesPage(pages.Placeholder{TabName: "P"}).
+		WithLauncherPage(pages.Placeholder{TabName: "L"}).
+		WithMonitorPage(pages.Placeholder{TabName: "Mo"}).
+		WithModelsPage(pages.Placeholder{TabName: "Md"})
+	r.width = 120
+	if !strings.Contains(r.View(), "│") {
+		t.Errorf("tab strip missing │ separator; view:\n%s", r.View())
+	}
+}
+
 func TestRoot_StatusBarMentionsHelp(t *testing.T) {
 	r := NewRoot(TabProfiles).
 		WithProfilesPage(pages.Placeholder{TabName: "P"}).
@@ -340,6 +405,43 @@ func TestRoot_StatusBarMentionsHelp(t *testing.T) {
 	view := r.View()
 	if !strings.Contains(view, "[?] help") {
 		t.Errorf("status bar missing [?] help; view:\n%s", view)
+	}
+}
+
+// hintingPage is a tea.Model that publishes a known Hints() string.
+type hintingPage struct{ name string }
+
+func (h hintingPage) Init() tea.Cmd                       { return nil }
+func (h hintingPage) Update(tea.Msg) (tea.Model, tea.Cmd) { return h, nil }
+func (h hintingPage) View() string                        { return h.name }
+func (h hintingPage) Hints() string                       { return "[x] do-x  [y] do-y" }
+
+func TestRoot_StatusBarIncludesActivePageHints(t *testing.T) {
+	r := NewRoot(TabProfiles).
+		WithProfilesPage(hintingPage{name: "P"}).
+		WithLauncherPage(pages.Placeholder{TabName: "L"})
+	r.width = 120
+	r.recomputeHints()
+
+	view := r.View()
+	if !strings.Contains(view, "[x] do-x") {
+		t.Errorf("active page hints not in status bar; view:\n%s", view)
+	}
+	if !strings.Contains(view, "[?] help") {
+		t.Errorf("global help token missing; view:\n%s", view)
+	}
+
+	// Switch tabs — placeholder Launcher does not implement HintProvider, so
+	// only globalHints should remain.
+	updated, _ := r.activate(TabLauncher)
+	rl := updated.(RootModel)
+	rl.width = 120
+	view = rl.View()
+	if strings.Contains(view, "[x] do-x") {
+		t.Errorf("stale page hints still in status bar after tab switch; view:\n%s", view)
+	}
+	if !strings.Contains(view, "[?] help") {
+		t.Errorf("global help token missing after tab switch; view:\n%s", view)
 	}
 }
 

@@ -45,6 +45,7 @@ type ModelPicker struct {
 	filter     string
 	filterMode bool
 	scanning   bool
+	err        string // populated when Scan returns an error
 
 	width  int
 	height int
@@ -99,7 +100,7 @@ func pickerWaitForEvent(ch <-chan domain.ScanEvent) tea.Cmd {
 
 // pickerKeys for the modal.
 type pickerKeys struct {
-	Up, Down, Enter, Esc, Filter, Backspace key.Binding
+	Up, Down, Enter, Esc, Filter, Backspace, PgUp, PgDn, Home, End, GTop, GBottom key.Binding
 }
 
 func defaultPickerKeys() pickerKeys {
@@ -110,6 +111,12 @@ func defaultPickerKeys() pickerKeys {
 		Esc:       key.NewBinding(key.WithKeys("esc")),
 		Filter:    key.NewBinding(key.WithKeys("/")),
 		Backspace: key.NewBinding(key.WithKeys("backspace")),
+		PgUp:      key.NewBinding(key.WithKeys("pgup")),
+		PgDn:      key.NewBinding(key.WithKeys("pgdown")),
+		Home:      key.NewBinding(key.WithKeys("home")),
+		End:       key.NewBinding(key.WithKeys("end")),
+		GTop:      key.NewBinding(key.WithKeys("g")),
+		GBottom:   key.NewBinding(key.WithKeys("G")),
 	}
 }
 
@@ -123,6 +130,7 @@ func (m ModelPicker) Update(msg tea.Msg) (ModelPicker, tea.Cmd) {
 	case PickerScanStartedMsg:
 		if msg.Err != nil {
 			m.scanning = false
+			m.err = msg.Err.Error()
 			return m, nil
 		}
 		m.cancel = msg.Cancel
@@ -133,6 +141,10 @@ func (m ModelPicker) Update(msg tea.Msg) (ModelPicker, tea.Cmd) {
 			if msg.Evt.File != nil {
 				m.files = append(m.files, *msg.Evt.File)
 				m.applyFilter()
+			}
+		case domain.ScanEventError:
+			if msg.Evt.Error != nil {
+				m.err = msg.Evt.Error.Error()
 			}
 		case domain.ScanEventDone:
 			m.scanning = false
@@ -188,6 +200,33 @@ func (m ModelPicker) Update(msg tea.Msg) (ModelPicker, tea.Cmd) {
 			}
 			return m, nil
 		}
+		if key.Matches(msg, keys.PgUp) {
+			m.cursor -= 10
+			if m.cursor < 0 {
+				m.cursor = 0
+			}
+			return m, nil
+		}
+		if key.Matches(msg, keys.PgDn) {
+			m.cursor += 10
+			if m.cursor > len(m.filtered)-1 {
+				m.cursor = len(m.filtered) - 1
+			}
+			if m.cursor < 0 {
+				m.cursor = 0
+			}
+			return m, nil
+		}
+		if key.Matches(msg, keys.Home) || (!m.filterMode && key.Matches(msg, keys.GTop)) {
+			m.cursor = 0
+			return m, nil
+		}
+		if key.Matches(msg, keys.End) || (!m.filterMode && key.Matches(msg, keys.GBottom)) {
+			if len(m.filtered) > 0 {
+				m.cursor = len(m.filtered) - 1
+			}
+			return m, nil
+		}
 	}
 	return m, nil
 }
@@ -227,18 +266,71 @@ func (m ModelPicker) View() string {
 	if m.filterMode || m.filter != "" {
 		filterLine = theme.Subtitle.Render(fmt.Sprintf("filter: %q", m.filter))
 	}
+	boxW := pickerBoxWidth(m.width)
+	nameW, quantW, paramsW, pathW := pickerColumnWidths(boxW)
+	rowFmt := fmt.Sprintf("%%-%ds  %%-%ds  %%-%ds  %%-%ds", nameW, quantW, paramsW, pathW)
 	rows := make([]string, 0, len(m.filtered))
 	for i, f := range m.filtered {
-		row := fmt.Sprintf("%-36s  %-8s  %-6s  %s", truncatePath(f.Name, 36), f.Quant, f.Params, truncatePath(f.Path, 60))
+		row := fmt.Sprintf(rowFmt, truncatePath(f.Name, nameW), truncatePath(f.Quant, quantW), truncatePath(f.Params, paramsW), truncatePath(f.Path, pathW))
 		if i == m.cursor {
 			row = theme.Selected.Render(row)
+			if theme.NoColor() {
+				row = "> " + row
+			}
 		}
 		rows = append(rows, row)
 	}
 	body := strings.Join(rows, "\n")
 	help := theme.Subtitle.Render(hint)
-	box := lipgloss.JoinVertical(lipgloss.Left, title, statusLine, filterLine, body, help)
-	return theme.Pane.Width(80).Render(box)
+	parts := []string{title}
+	if m.err != "" {
+		parts = append(parts, theme.Error.Render("scan error: "+m.err))
+	}
+	parts = append(parts, statusLine, filterLine, body, help)
+	box := lipgloss.JoinVertical(lipgloss.Left, parts...)
+	return theme.Pane.Width(boxW).Render(box)
+}
+
+// pickerBoxWidth picks the picker overlay width from the terminal width.
+// Targets min(width-4, 120) with a 60-column floor so narrow terminals
+// still produce a usable layout.
+func pickerBoxWidth(termWidth int) int {
+	const (
+		floor = 60
+		ceil  = 120
+	)
+	w := termWidth - 4
+	if w > ceil {
+		w = ceil
+	}
+	if w < floor {
+		w = floor
+	}
+	return w
+}
+
+// pickerColumnWidths splits the box width across name / quant / params /
+// path columns. Quant + params have fixed widths; the rest is split 1:2
+// between name and path.
+func pickerColumnWidths(boxW int) (name, quant, params, path int) {
+	const (
+		quantW  = 8
+		paramsW = 6
+		gutter  = 8 // 4 separators × 2 spaces
+	)
+	rest := boxW - quantW - paramsW - gutter
+	if rest < 16 {
+		rest = 16
+	}
+	name = rest / 3
+	if name < 8 {
+		name = 8
+	}
+	path = rest - name
+	if path < 8 {
+		path = 8
+	}
+	return name, quantW, paramsW, path
 }
 
 func truncatePath(s string, max int) string {

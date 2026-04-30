@@ -126,16 +126,55 @@ func buildEditorForm(d *profileDraft, schema domain.FlagSchema) *huh.Form {
 			huh.NewInput().Title("Model path (.gguf)").Value(&d.Model),
 		),
 		huh.NewGroup(
-			huh.NewInput().Title(labelWithHelp(schema, "n-gpu-layers", "ngl (gpu layers)")).Value(&d.NGL),
-			huh.NewInput().Title(labelWithHelp(schema, "ctx-size", "ctx-size")).Value(&d.CtxSize),
-			huh.NewInput().Title(labelWithHelp(schema, "batch-size", "batch-size")).Value(&d.BatchSize),
-			huh.NewInput().Title(labelWithHelp(schema, "ubatch-size", "ubatch-size")).Value(&d.UBatchSize),
-			huh.NewInput().Title(labelWithHelp(schema, "port", "port")).Value(&d.Port),
+			huh.NewInput().Title(labelWithHelp(schema, "n-gpu-layers", "ngl (gpu layers)")).Value(&d.NGL).Validate(intRange(-1, 9999, false)),
+			huh.NewInput().Title(labelWithHelp(schema, "ctx-size", "ctx-size")).Value(&d.CtxSize).Validate(intRange(0, 1024*1024, false)),
+			huh.NewInput().Title(labelWithHelp(schema, "batch-size", "batch-size")).Value(&d.BatchSize).Validate(intRange(0, 1024*1024, true)),
+			huh.NewInput().Title(labelWithHelp(schema, "ubatch-size", "ubatch-size")).Value(&d.UBatchSize).Validate(intRange(0, 1024*1024, true)),
+			huh.NewInput().Title(labelWithHelp(schema, "port", "port")).Value(&d.Port).Validate(portValidator()),
 			huh.NewSelect[string]().Title(labelWithHelp(schema, "flash-attn", "flash-attn")).Options(toOptions(selectOptions(schema, "flash-attn", []string{"on", "off", "auto"}))...).Value(&d.FlashAttn),
 			huh.NewSelect[string]().Title("cache-type-k").Options(toOptions(cacheOpts)...).Value(&d.CacheTypeK),
 			huh.NewSelect[string]().Title("cache-type-v").Options(toOptions(cacheOpts)...).Value(&d.CacheTypeV),
 		),
 	).WithShowHelp(true)
+}
+
+// intRange returns a huh validator for integer fields in [min,max].
+// allowEmpty=true treats "" as valid (used for optional fields like
+// batch-size that fall back to llama-server defaults when blank).
+func intRange(min, max int, allowEmpty bool) func(string) error {
+	return func(s string) error {
+		if s == "" {
+			if allowEmpty {
+				return nil
+			}
+			return fmt.Errorf("required")
+		}
+		v, err := strconv.Atoi(s)
+		if err != nil {
+			return fmt.Errorf("must be an integer")
+		}
+		if v < min || v > max {
+			return fmt.Errorf("must be in [%d, %d]", min, max)
+		}
+		return nil
+	}
+}
+
+// portValidator restricts to valid TCP port range (0 reserved → require 1+).
+func portValidator() func(string) error {
+	return func(s string) error {
+		if s == "" {
+			return fmt.Errorf("required")
+		}
+		v, err := strconv.Atoi(s)
+		if err != nil {
+			return fmt.Errorf("must be an integer")
+		}
+		if v < 1 || v > 65535 {
+			return fmt.Errorf("must be in [1, 65535]")
+		}
+		return nil
+	}
 }
 
 func labelWithHelp(schema domain.FlagSchema, name, fallback string) string {

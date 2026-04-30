@@ -2,6 +2,7 @@ package pages
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -158,9 +159,131 @@ func TestModelsPage_RescanDropsStaleEvents(t *testing.T) {
 	}
 }
 
-func TestModelsPage_FooterMentionsHelp(t *testing.T) {
+func TestModelsPage_EmptyStateHintAfterScanComplete(t *testing.T) {
+	page := NewModelsPage(&fakeScanner{}, []string{"/models"})
+	// Mark the root as scanned with zero results.
+	page.statusMap["/models"] = pathStatus{state: "scanned"}
+	out := page.View()
+	if !strings.Contains(out, "no .gguf files") {
+		t.Errorf("scanned-empty Models view missing hint; got:\n%s", out)
+	}
+}
+
+func TestModelsPage_NoEmptyStateWhileScanning(t *testing.T) {
+	page := NewModelsPage(&fakeScanner{}, []string{"/models"})
+	// statusMap initialized to "scanning" — empty hint must not show yet.
+	out := page.View()
+	if strings.Contains(out, "no .gguf files") {
+		t.Errorf("scanning Models view should not show empty hint yet; got:\n%s", out)
+	}
+}
+
+func TestModelsPage_RenderStatusWrapsWhenOverflow(t *testing.T) {
+	page := NewModelsPage(&fakeScanner{}, []string{"/a/very/long/root/path/one", "/another/long/root/path/two", "/third/root"})
+	page.width = 60
+	for _, p := range page.paths {
+		page.statusMap[p] = pathStatus{state: "scanned", count: 3}
+	}
+	out := page.renderStatus()
+	if !strings.Contains(out, "\n") {
+		t.Errorf("narrow terminal renderStatus should wrap to multiple lines; got %q", out)
+	}
+}
+
+func TestModelsPage_TruncFrontPreservesTail(t *testing.T) {
+	got := truncFront("/very/long/path/to/the/big/dataset/folder", 20)
+	if !strings.HasPrefix(got, "…") {
+		t.Errorf("truncFront should start with …; got %q", got)
+	}
+	if !strings.HasSuffix(got, "/folder") {
+		t.Errorf("truncFront should preserve tail; got %q", got)
+	}
+}
+
+func TestModelsPage_RevealCopiesPathToClipboard(t *testing.T) {
+	var captured string
+	prev := clipboardWriter
+	clipboardWriter = func(s string) error {
+		captured = s
+		return nil
+	}
+	t.Cleanup(func() { clipboardWriter = prev })
+
+	page := NewModelsPage(&fakeScanner{}, []string{"/m"})
+	updated, _ := page.commitRootAction("reveal", "/models/foo.gguf")
+	mp := updated.(ModelsPage)
+
+	if captured != "/models/foo.gguf" {
+		t.Errorf("clipboard captured %q, want /models/foo.gguf", captured)
+	}
+	if !strings.Contains(mp.flash, "copied") {
+		t.Errorf("flash %q missing 'copied'", mp.flash)
+	}
+}
+
+func TestModelsPage_RevealHandlesClipboardError(t *testing.T) {
+	prev := clipboardWriter
+	clipboardWriter = func(string) error { return errors.New("no display") }
+	t.Cleanup(func() { clipboardWriter = prev })
+
+	page := NewModelsPage(&fakeScanner{}, []string{"/m"})
+	updated, _ := page.commitRootAction("reveal", "/models/foo.gguf")
+	mp := updated.(ModelsPage)
+
+	if !strings.Contains(mp.flash, "clipboard error") {
+		t.Errorf("flash %q missing 'clipboard error'", mp.flash)
+	}
+}
+
+func TestModelsPage_HintsListPageKeys(t *testing.T) {
 	page := NewModelsPage(&fakeScanner{}, nil)
-	if !strings.Contains(page.View(), "[?] help") {
-		t.Errorf("models footer missing [?] help; got:\n%s", page.View())
+	hints := page.Hints()
+	for _, want := range []string{"[/]", "[R]", "[enter]", "[esc]"} {
+		if !strings.Contains(hints, want) {
+			t.Errorf("Hints missing %q; got %q", want, hints)
+		}
+	}
+}
+
+// TestModelsPage_FilterModeRescanKeyAppendsToFilter is a regression for the
+// adversarial-review finding: typing uppercase 'R' inside filter mode used to
+// match keys.Rescan and trigger a recursive filesystem scan. After the fix,
+// runes (including 'R') must be appended to the filter buffer instead.
+func TestModelsPage_FilterModeRescanKeyAppendsToFilter(t *testing.T) {
+	page := NewModelsPage(&fakeScanner{}, []string{"/m"})
+	page.filterMode = true
+	page.scanID = 7
+
+	updated, cmd := page.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'R'}})
+	mp := updated.(ModelsPage)
+
+	if mp.filter != "R" {
+		t.Errorf("filter = %q, want %q", mp.filter, "R")
+	}
+	if mp.scanID != 7 {
+		t.Errorf("scanID = %d, want 7 (rescan must NOT have fired)", mp.scanID)
+	}
+	if cmd != nil {
+		// startScanCmd would be the only cmd this path produces; assert nil.
+		t.Errorf("expected no cmd, got %T", cmd())
+	}
+}
+
+func TestModelsPage_IsCapturingInput(t *testing.T) {
+	page := NewModelsPage(&fakeScanner{}, nil)
+
+	if page.IsCapturingInput() {
+		t.Error("expected IsCapturingInput=false when idle")
+	}
+
+	page.filterMode = true
+	if !page.IsCapturingInput() {
+		t.Error("expected IsCapturingInput=true when filterMode is active")
+	}
+
+	page.filterMode = false
+	page.action = &actionMenu{}
+	if !page.IsCapturingInput() {
+		t.Error("expected IsCapturingInput=true when action menu is open")
 	}
 }

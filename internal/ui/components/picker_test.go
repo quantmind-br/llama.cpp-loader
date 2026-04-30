@@ -2,12 +2,21 @@ package components
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/quantmind-br/llama-cpp-loader/internal/domain"
+	"github.com/quantmind-br/llama-cpp-loader/internal/ui/theme"
 )
+
+type errorScanner struct{ err error }
+
+func (e *errorScanner) Scan(ctx context.Context, paths []string) (<-chan domain.ScanEvent, error) {
+	return nil, e.err
+}
 
 type fakePickerScanner struct {
 	events []domain.ScanEvent
@@ -46,6 +55,118 @@ func drainScan(t *testing.T, p ModelPicker) ModelPicker {
 		cmd = c
 	}
 	return p
+}
+
+func TestModelPicker_SurfacesScanError(t *testing.T) {
+	scanner := &errorScanner{err: errors.New("permission denied: /models")}
+	p := NewModelPicker(scanner, []string{"/models"})
+	p = drainScan(t, p)
+
+	out := p.View()
+	if !strings.Contains(out, "scan error:") {
+		t.Errorf("view missing scan error line; got:\n%s", out)
+	}
+	if !strings.Contains(out, "permission denied") {
+		t.Errorf("view missing underlying error message; got:\n%s", out)
+	}
+}
+
+func TestModelPicker_NoErrorWhenScanSucceeds(t *testing.T) {
+	scanner := &fakePickerScanner{}
+	p := NewModelPicker(scanner, []string{"/models"})
+	p = drainScan(t, p)
+	if strings.Contains(p.View(), "scan error:") {
+		t.Errorf("successful scan should not show error line")
+	}
+}
+
+func TestModelPicker_BoxWidthClampedToCeiling(t *testing.T) {
+	if got := pickerBoxWidth(200); got != 120 {
+		t.Errorf("pickerBoxWidth(200) = %d, want 120", got)
+	}
+}
+
+func TestModelPicker_BoxWidthHonorsFloor(t *testing.T) {
+	if got := pickerBoxWidth(40); got != 60 {
+		t.Errorf("pickerBoxWidth(40) = %d, want 60 (floor)", got)
+	}
+}
+
+func TestModelPicker_BoxWidthScalesWithTerminal(t *testing.T) {
+	if got := pickerBoxWidth(100); got != 96 {
+		t.Errorf("pickerBoxWidth(100) = %d, want 96 (width-4)", got)
+	}
+}
+
+// pickerWithFiles produces a picker pre-loaded with n synthetic files so
+// the navigation tests can drive cursor moves without scanning.
+func pickerWithFiles(n int) ModelPicker {
+	p := ModelPicker{}
+	for i := 0; i < n; i++ {
+		p.files = append(p.files, domain.ModelFile{Name: "m", Path: "/p", Quant: "q4", Params: "7B"})
+	}
+	p.applyFilter()
+	return p
+}
+
+func TestModelPicker_PgDnAdvancesByTen(t *testing.T) {
+	p := pickerWithFiles(50)
+	p, _ = p.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	if p.cursor != 10 {
+		t.Errorf("PgDn cursor = %d, want 10", p.cursor)
+	}
+}
+
+func TestModelPicker_PgUpRetreatsByTen(t *testing.T) {
+	p := pickerWithFiles(50)
+	p.cursor = 25
+	p, _ = p.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+	if p.cursor != 15 {
+		t.Errorf("PgUp cursor = %d, want 15", p.cursor)
+	}
+}
+
+func TestModelPicker_EndJumpsToLast(t *testing.T) {
+	p := pickerWithFiles(50)
+	p, _ = p.Update(tea.KeyMsg{Type: tea.KeyEnd})
+	if p.cursor != 49 {
+		t.Errorf("End cursor = %d, want 49", p.cursor)
+	}
+}
+
+func TestModelPicker_HomeJumpsToFirst(t *testing.T) {
+	p := pickerWithFiles(50)
+	p.cursor = 30
+	p, _ = p.Update(tea.KeyMsg{Type: tea.KeyHome})
+	if p.cursor != 0 {
+		t.Errorf("Home cursor = %d, want 0", p.cursor)
+	}
+}
+
+func TestModelPicker_GAndCapitalGOnlyOutsideFilterMode(t *testing.T) {
+	p := pickerWithFiles(50)
+
+	// Lowercase g goes to top.
+	p.cursor = 30
+	p, _ = p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'g'}})
+	if p.cursor != 0 {
+		t.Errorf("g (top) cursor = %d, want 0", p.cursor)
+	}
+
+	// Capital G goes to bottom.
+	p, _ = p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'G'}})
+	if p.cursor != 49 {
+		t.Errorf("G (bottom) cursor = %d, want 49", p.cursor)
+	}
+
+	// In filter mode, g should be eaten as a filter character — verified by
+	// checking p.filter, not cursor (the filter likely empties the list and
+	// applyFilter snaps the cursor to 0 as a side-effect).
+	p.filterMode = true
+	p, _ = p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'g'}})
+	if p.filter != "g" {
+		t.Errorf("g in filterMode should append to filter; got %q", p.filter)
+	}
 }
 
 func TestModelPicker_SelectEmitsModelPickedMsg(t *testing.T) {
@@ -107,5 +228,40 @@ func TestModelPicker_FilterReducesList(t *testing.T) {
 	}
 	if p.filtered[0].Name != "qwen.gguf" {
 		t.Fatalf("filtered[0] = %q", p.filtered[0].Name)
+	}
+}
+
+func TestModelPicker_SurfacesScanEventError(t *testing.T) {
+	scanner := &fakePickerScanner{events: []domain.ScanEvent{
+		{Type: domain.ScanEventError, Root: "/models", Error: errors.New("permission denied")},
+		{Type: domain.ScanEventDone},
+	}}
+	p := NewModelPicker(scanner, []string{"/models"})
+	p = drainScan(t, p)
+
+	if p.err != "permission denied" {
+		t.Errorf("picker.err = %q, want 'permission denied'", p.err)
+	}
+	out := p.View()
+	if !strings.Contains(out, "scan error:") {
+		t.Errorf("view missing scan error line; got:\n%s", out)
+	}
+}
+
+func TestModelPicker_SelectedPrefixUnderNoColor(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	theme.RebuildStyles()
+	defer func() {
+		t.Setenv("NO_COLOR", "")
+		theme.RebuildStyles()
+	}()
+
+	p := pickerWithFiles(3)
+	p.cursor = 1
+	out := p.View()
+	// Non-color prefix "> " marks the selected row when NO_COLOR strips
+	// foreground/background colors.
+	if !strings.Contains(out, "> m") {
+		t.Errorf("NO_COLOR picker view missing cursor prefix on selected row; got:\n%s", out)
 	}
 }
