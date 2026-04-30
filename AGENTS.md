@@ -1,7 +1,7 @@
 # PROJECT KNOWLEDGE BASE
 
 **Generated:** 2026-04-29
-**Commit:** d6e6ff7
+**Commit:** 5699349
 **Branch:** main
 
 ## OVERVIEW
@@ -65,6 +65,7 @@ TUI application for managing llama.cpp profiles and llama-server processes. Buil
 - Viper config with mapstructure tags
 - Domain-driven service layer under internal/service/
 - Embedded fallback schema for llama-server --help (parses at runtime if binary present)
+- Pages optionally implement `Reloader` for on-demand refresh on tab focus
 
 ## COMMANDS
 ```bash

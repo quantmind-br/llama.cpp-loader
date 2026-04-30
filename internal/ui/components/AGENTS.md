@@ -10,7 +10,7 @@ Reusable UI primitives. Mix of pure render helpers and bubbletea Models.
 | `modal.go` | `Modal(title, body, width, height)` — centered lipgloss box. Pass `0,0` to skip centering (tests). |
 | `sparkline.go` | `Sparkline(values, width)` — pure function, 8-bar ASCII sparkline. No bubbletea deps. |
 | `statusbar.go` | `StatusBar` struct with level-based coloring (`Info`/`Warn`/`Error`). Not a full Model, just Render(). |
-| `help.go` | `HelpMarkdown` constant + `RenderHelp(width)` via glamour. Markdown must stay in sync with actual keybindings. |
+| `help.go` | `HelpMarkdown` constant + `RenderHelp(width)` via glamour. Markdown must stay in sync with actual keybindings (e.g. monitor sub-views use `v`, not `Tab`). |
 
 ## CONVENTIONS
 - Pure helpers (`Sparkline`, `Modal`, `RenderHelp`) take `width/height` explicitly. No tea.Msg handling.

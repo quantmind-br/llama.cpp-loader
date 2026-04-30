@@ -1,1 +1,1 @@
-/home/diogo/dev/llama.cpp-loader/AGENTS.md
+AGENTS.md

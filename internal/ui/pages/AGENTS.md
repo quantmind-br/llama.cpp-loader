@@ -18,11 +18,12 @@ Tab page implementations. Each page is a `tea.Model` with isolated state and lif
 - `huh` forms for all interactive input
 - `bubbles/list` and `bubbles/table` for collections
 - Test files are side-by-side (`*_test.go`) with table-driven tests
+- Heap-allocated form state (`*profileDraft`) required so `&field` bindings survive bubbletea's value-receiver copies across Updates
 
 ## ANTI-PATTERNS
 - DO NOT import `internal/ui/root` from pages (pages are leaf nodes)
 - DO NOT handle global keybinds here (`root.go` owns tab switching, quit, etc.)
 
 ## NOTES
-- `SwitchToMonitorMsg` and `MonitorSelectPIDMsg` are the only cross-tab coordination mechanism
+- `SwitchToMonitorMsg`, `MonitorSelectPIDMsg`, and `LaunchProfileMsg` are cross-tab coordination mechanisms
 - `Placeholder` can be reused for new tabs before full implementation
