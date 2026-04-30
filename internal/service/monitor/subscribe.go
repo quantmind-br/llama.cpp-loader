@@ -18,47 +18,77 @@ func (m *fsMonitor) Subscribe(pid, port int, logPath string) (<-chan MonitorEven
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	out := make(chan MonitorEvent, 256)
-
 	logLines := make(chan string, 256)
-	follower, err := newLogFollower(logPath, logLines)
-	if err != nil {
-		cancel()
-		return nil, nil, fmt.Errorf("log follower: %w", err)
-	}
-
 	slotsRaw := make(chan MonitorEvent, 256)
-	baseURL := fmt.Sprintf("http://127.0.0.1:%d", port)
-	slots := newSlotsPoller(baseURL, m.cfg.HTTPClient, m.cfg.SlotsTickInterval, slotsRaw)
-	gpu := newGPUPoller(pid, m.cfg.NvidiaSMIPath, m.cfg.GPUTickInterval, out)
 	agg := newMetricsAgg(m.cfg.MetricsWindow)
 
 	var wg sync.WaitGroup
-	wg.Add(6)
+	if err := startLogFollower(ctx, &wg, logPath, logLines); err != nil {
+		cancel()
+		return nil, nil, fmt.Errorf("log follower: %w", err)
+	}
+	startSlotsPoller(ctx, &wg, port, m.cfg, slotsRaw)
+	startGPUPoller(ctx, &wg, pid, m.cfg, out)
+	runLogPump(ctx, &wg, pid, m.cfg.LogRingSize, agg, logLines, out)
+	runSlotsPump(ctx, &wg, pid, agg, slotsRaw, out)
+	runMetricsTick(ctx, &wg, pid, m.cfg.SlotsTickInterval, agg, out)
 
-	// follower: tail log file, push lines into logLines.
+	sub := &subscription{cancel: cancel, doneCh: make(chan struct{})}
+	closeOnDone(&wg, out, sub.doneCh)
+
+	return out, makeCancelFn(sub.cancel, sub.doneCh), nil
+}
+
+// startLogFollower opens the log file and spawns a tailing goroutine that
+// pushes every appended line into logLines. Returns an error iff the file
+// cannot be opened. logLines is closed when the goroutine exits so the log
+// pump terminates cleanly on cancel.
+func startLogFollower(ctx context.Context, wg *sync.WaitGroup, logPath string, logLines chan<- string) error {
+	follower, err := newLogFollower(logPath, logLines)
+	if err != nil {
+		return err
+	}
+	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		defer close(logLines)
 		follower.run(ctx)
 	}()
+	return nil
+}
 
-	// slots-poller: emit SourceSlots/SourceHealth into slotsRaw.
+// startSlotsPoller emits SourceSlots/SourceHealth events into slotsRaw at
+// cfg.SlotsTickInterval. Closes slotsRaw on exit so the slots pump
+// terminates.
+func startSlotsPoller(ctx context.Context, wg *sync.WaitGroup, port int, cfg Config, slotsRaw chan<- MonitorEvent) {
+	baseURL := fmt.Sprintf("http://127.0.0.1:%d", port)
+	sp := newSlotsPoller(baseURL, cfg.HTTPClient, cfg.SlotsTickInterval, slotsRaw)
+	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		defer close(slotsRaw)
-		slots.run(ctx)
+		sp.run(ctx)
 	}()
+}
 
-	// gpu-poller: emit SourceGPU directly to out.
+// startGPUPoller emits SourceGPU events directly to out at
+// cfg.GPUTickInterval.
+func startGPUPoller(ctx context.Context, wg *sync.WaitGroup, pid int, cfg Config, out chan<- MonitorEvent) {
+	g := newGPUPoller(pid, cfg.NvidiaSMIPath, cfg.GPUTickInterval, out)
+	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		gpu.run(ctx)
+		g.run(ctx)
 	}()
+}
 
-	// log-pump: ring buffer + metrics observe + forward as SourceLogs.
+// runLogPump consumes logLines, maintains the ring buffer for crash dumps,
+// feeds the metrics aggregator, and forwards each line as SourceLogs.
+func runLogPump(ctx context.Context, wg *sync.WaitGroup, pid, ringSize int, agg *metricsAgg, logLines <-chan string, out chan<- MonitorEvent) {
+	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		ring := newLogRing(m.cfg.LogRingSize)
+		ring := newLogRing(ringSize)
 		for {
 			select {
 			case <-ctx.Done():
@@ -82,8 +112,12 @@ func (m *fsMonitor) Subscribe(pid, port int, logPath string) (<-chan MonitorEven
 			}
 		}
 	}()
+}
 
-	// slots-pump: feed observeSlots, forward all slotsRaw events to out.
+// runSlotsPump feeds slot snapshots into the metrics aggregator and forwards
+// every slotsRaw event to out, stamping the PID first.
+func runSlotsPump(ctx context.Context, wg *sync.WaitGroup, pid int, agg *metricsAgg, slotsRaw <-chan MonitorEvent, out chan<- MonitorEvent) {
+	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		for {
@@ -107,11 +141,14 @@ func (m *fsMonitor) Subscribe(pid, port int, logPath string) (<-chan MonitorEven
 			}
 		}
 	}()
+}
 
-	// metrics-tick: periodic snapshot emission.
+// runMetricsTick emits a SourceMetrics snapshot every interval.
+func runMetricsTick(ctx context.Context, wg *sync.WaitGroup, pid int, interval time.Duration, agg *metricsAgg, out chan<- MonitorEvent) {
+	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		t := time.NewTicker(m.cfg.SlotsTickInterval)
+		t := time.NewTicker(interval)
 		defer t.Stop()
 		for {
 			select {
@@ -126,17 +163,24 @@ func (m *fsMonitor) Subscribe(pid, port int, logPath string) (<-chan MonitorEven
 			}
 		}
 	}()
+}
 
-	sub := &subscription{cancel: cancel, doneCh: make(chan struct{})}
+// closeOnDone waits for every poller goroutine to finish, then closes the
+// output channel and signals subscription teardown via doneCh.
+func closeOnDone(wg *sync.WaitGroup, out chan<- MonitorEvent, doneCh chan struct{}) {
 	go func() {
 		wg.Wait()
 		close(out)
-		close(sub.doneCh)
+		close(doneCh)
 	}()
+}
 
-	return out, func() error {
-		sub.cancel()
-		<-sub.doneCh
+// makeCancelFn wraps the context cancel and a wait on doneCh so the caller's
+// teardown blocks until every poller has exited.
+func makeCancelFn(cancel context.CancelFunc, doneCh <-chan struct{}) func() error {
+	return func() error {
+		cancel()
+		<-doneCh
 		return nil
-	}, nil
+	}
 }
