@@ -816,3 +816,113 @@ func TestMonitorPage_HintsListPageKeys(t *testing.T) {
 		}
 	}
 }
+
+// ---- subState.Apply (CQ-008) ----
+
+func TestSubState_Apply_LogLine(t *testing.T) {
+	s := &subState{}
+	ev := monitor.MonitorEvent{
+		Source: monitor.SourceLogs,
+		PID:    42,
+		Data:   monitor.LogLine{Line: "hello"},
+	}
+	s.Apply(ev, false)
+	if len(s.logs) != 1 || s.logs[0] != "hello" {
+		t.Fatalf("expected logs=[hello]; got %#v", s.logs)
+	}
+}
+
+func TestSubState_Apply_LogLine_Paused(t *testing.T) {
+	s := &subState{logs: []string{"prev"}}
+	ev := monitor.MonitorEvent{
+		Source: monitor.SourceLogs,
+		PID:    42,
+		Data:   monitor.LogLine{Line: "dropped"},
+	}
+	s.Apply(ev, true)
+	if len(s.logs) != 1 || s.logs[0] != "prev" {
+		t.Fatalf("paused: expected logs unchanged ([prev]); got %#v", s.logs)
+	}
+}
+
+func TestSubState_Apply_LogLine_CapAt2000(t *testing.T) {
+	s := &subState{}
+	for i := 0; i < 2000; i++ {
+		s.logs = append(s.logs, fmt.Sprintf("line-%d", i))
+	}
+	ev := monitor.MonitorEvent{
+		Source: monitor.SourceLogs,
+		PID:    1,
+		Data:   monitor.LogLine{Line: "overflow"},
+	}
+	s.Apply(ev, false)
+	if len(s.logs) != 2000 {
+		t.Fatalf("expected log buffer capped at 2000; got %d", len(s.logs))
+	}
+	if s.logs[0] != "line-1" {
+		t.Fatalf("expected oldest line evicted (head=line-1); got %q", s.logs[0])
+	}
+	if s.logs[1999] != "overflow" {
+		t.Fatalf("expected newest line at tail (=overflow); got %q", s.logs[1999])
+	}
+}
+
+func TestSubState_Apply_SlotSnapshot(t *testing.T) {
+	s := &subState{}
+	snap := monitor.SlotSnapshot{Slots: []monitor.Slot{{ID: 0, State: "processing"}}}
+	ev := monitor.MonitorEvent{
+		Source: monitor.SourceSlots,
+		PID:    7,
+		Data:   snap,
+	}
+	s.Apply(ev, false)
+	if len(s.slots.Slots) != 1 || s.slots.Slots[0].State != "processing" {
+		t.Fatalf("expected slots replaced with snap; got %#v", s.slots)
+	}
+}
+
+func TestSubState_Apply_GPUStats(t *testing.T) {
+	s := &subState{}
+	stats := monitor.GPUStats{VRAMUsedMB: 1234, VRAMTotalMB: 24000, Utilization: 55.5, Source: "nvidia-smi"}
+	ev := monitor.MonitorEvent{
+		Source: monitor.SourceGPU,
+		PID:    9,
+		Data:   stats,
+	}
+	s.Apply(ev, false)
+	if s.gpu != stats {
+		t.Fatalf("expected gpu=%#v; got %#v", stats, s.gpu)
+	}
+}
+
+func TestSubState_Apply_HealthStatus(t *testing.T) {
+	s := &subState{}
+	hs := monitor.HealthStatus{OK: true, Status: "ok"}
+	ev := monitor.MonitorEvent{
+		Source: monitor.SourceHealth,
+		PID:    11,
+		Data:   hs,
+	}
+	s.Apply(ev, false)
+	if s.health != hs {
+		t.Fatalf("expected health=%#v; got %#v", hs, s.health)
+	}
+}
+
+func TestSubState_Apply_Metrics(t *testing.T) {
+	s := &subState{}
+	mets := monitor.Metrics{
+		TokensPerSec:   []float64{1, 2, 3},
+		RequestsPerSec: []float64{0.1, 0.2},
+		WindowSeconds:  60,
+	}
+	ev := monitor.MonitorEvent{
+		Source: monitor.SourceMetrics,
+		PID:    13,
+		Data:   mets,
+	}
+	s.Apply(ev, false)
+	if s.mets.WindowSeconds != 60 || len(s.mets.TokensPerSec) != 3 || len(s.mets.RequestsPerSec) != 2 {
+		t.Fatalf("expected mets replaced with rolling window; got %#v", s.mets)
+	}
+}

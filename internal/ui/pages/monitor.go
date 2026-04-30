@@ -69,6 +69,29 @@ type subState struct {
 	mets   monitor.Metrics
 }
 
+// Apply mutates the subState according to the concrete type carried by ev.Data.
+// When paused is true, log lines are dropped (other event kinds still update).
+// The log buffer is capped at 2000 lines.
+func (s *subState) Apply(ev monitor.MonitorEvent, paused bool) {
+	switch d := ev.Data.(type) {
+	case monitor.LogLine:
+		if !paused {
+			s.logs = append(s.logs, d.Line)
+			if len(s.logs) > 2000 {
+				s.logs = s.logs[len(s.logs)-2000:]
+			}
+		}
+	case monitor.SlotSnapshot:
+		s.slots = d
+	case monitor.GPUStats:
+		s.gpu = d
+	case monitor.HealthStatus:
+		s.health = d
+	case monitor.Metrics:
+		s.mets = d
+	}
+}
+
 type MonitorPage struct {
 	pm                 procMgrIface
 	mm                 monitor.Manager
@@ -213,35 +236,8 @@ func (p *MonitorPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// ---- Phase 4: Monitor event routing (logs, slots, GPU, health, metrics) ----
 	case monitorEventMsg:
-		st, ok := p.subs[m.ev.PID]
-		if ok {
-			switch m.ev.Source {
-			case monitor.SourceLogs:
-				if line, ok := m.ev.Data.(monitor.LogLine); ok {
-					if !p.paused {
-						st.logs = append(st.logs, line.Line)
-						if len(st.logs) > 2000 {
-							st.logs = st.logs[len(st.logs)-2000:]
-						}
-					}
-				}
-			case monitor.SourceSlots:
-				if s, ok := m.ev.Data.(monitor.SlotSnapshot); ok {
-					st.slots = s
-				}
-			case monitor.SourceGPU:
-				if g, ok := m.ev.Data.(monitor.GPUStats); ok {
-					st.gpu = g
-				}
-			case monitor.SourceHealth:
-				if h, ok := m.ev.Data.(monitor.HealthStatus); ok {
-					st.health = h
-				}
-			case monitor.SourceMetrics:
-				if mts, ok := m.ev.Data.(monitor.Metrics); ok {
-					st.mets = mts
-				}
-			}
+		if st, ok := p.subs[m.ev.PID]; ok {
+			st.Apply(m.ev, p.paused)
 		}
 		// Re-arm listener for this PID.
 		if ch, ok := p.chans[m.ev.PID]; ok {
