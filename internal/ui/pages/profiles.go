@@ -41,14 +41,11 @@ type ProfilesPage struct {
 	// bubbletea makes on every Update. A value field would escape to a
 	// different address each copy and the form would write to a stale draft.
 	draft         *profileDraft
-	confirmDelete bool
-	confirmForm   *huh.Form
-	confirmAnswer *bool // heap-allocated so address remains valid across Update copies
+	deleteConfirm components.Confirm
 
 	// Discard-unsaved-changes confirmation overlay (UIUX-002).
-	editorOpenSnapshot   profileDraft
-	confirmDiscardForm   *huh.Form
-	confirmDiscardAnswer *bool
+	editorOpenSnapshot profileDraft
+	discardConfirm     components.Confirm
 
 	// Advanced sub-tab state.
 	advanced       table.Model
@@ -261,41 +258,41 @@ func (p ProfilesPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		p.pickerActive = false
 		return p, nil
 
-	// ---- Phase 4: Key routing — dispatch to the active sub-mode ----
+	// ---- Phase 4: Post-confirm actions emitted by Confirm.onYes ----
+	case profileDeleteConfirmedMsg:
+		return p.performDelete(msg.id)
+	case profileDiscardConfirmedMsg:
+		p.editing = false
+		p.form = nil
+		p.draft = nil
+		return p, nil
+
+	// ---- Phase 5: Key routing — dispatch to the active sub-mode ----
 	// Priority: discard confirm > editor form > delete confirm > list nav.
 	case tea.KeyMsg:
-		if p.confirmDiscardForm != nil {
+		if p.discardConfirm.Active() {
 			return p.updateConfirmDiscard(msg)
 		}
 		if p.editing {
 			return p.updateForm(msg)
 		}
-		if p.confirmDelete {
+		if p.deleteConfirm.Active() {
 			return p.updateConfirm(msg)
 		}
 		return p.updateList(msg)
 	}
 
-	// ---- Phase 5: Forward non-key messages to active huh surfaces ----
+	// ---- Phase 6: Forward non-key messages to active huh surfaces ----
 	// This is required so internal Cmd→Msg loops (focus init, async
 	// validation, button styling refresh) actually fire. Without this
 	// the form never completes its Init() handshake.
 	//
-	// Priority must match Phase 4 key routing: discard confirm > editor
-	// form > delete confirm.  If discard is open p.editing is still true,
-	// so we check discard first to avoid stealing its Init handshake.
-	// Non-key forwarding also drives huh forms to StateCompleted via
-	// async nextFieldMsg / nextGroupMsg msgs. Each branch must check for
-	// completion and run the finalize path; otherwise the form stays
-	// referenced (View() blanks, IsCapturingInput stays true).
-	if p.confirmDiscardForm != nil {
-		updated, cmd := p.confirmDiscardForm.Update(msg)
-		if f, ok := updated.(*huh.Form); ok {
-			p.confirmDiscardForm = f
-		}
-		if p.confirmDiscardForm != nil && p.confirmDiscardForm.State == huh.StateCompleted {
-			p = p.finalizeConfirmDiscard()
-		}
+	// Priority must match key routing: discard confirm > editor form >
+	// delete confirm. If discard is open p.editing is still true, so we
+	// check discard first to avoid stealing its Init handshake.
+	if p.discardConfirm.Active() {
+		var cmd tea.Cmd
+		p.discardConfirm, cmd = p.discardConfirm.Update(msg)
 		return p, cmd
 	}
 	if p.editing && p.form != nil {
@@ -308,70 +305,45 @@ func (p ProfilesPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return p, cmd
 	}
-	if p.confirmDelete && p.confirmForm != nil {
-		updated, cmd := p.confirmForm.Update(msg)
-		if f, ok := updated.(*huh.Form); ok {
-			p.confirmForm = f
-		}
-		if p.confirmForm != nil && p.confirmForm.State == huh.StateCompleted {
-			return p.finalizeConfirmDelete(cmd)
-		}
+	if p.deleteConfirm.Active() {
+		var cmd tea.Cmd
+		p.deleteConfirm, cmd = p.deleteConfirm.Update(msg)
 		return p, cmd
 	}
 
 	return p, nil
 }
 
+// profileDeleteConfirmedMsg is emitted by deleteConfirm.onYes when the user
+// confirms a profile deletion. The page handles it in Update so the actual
+// store mutation, flash, and reload all happen on the UI thread.
+type profileDeleteConfirmedMsg struct{ id string }
+
+// profileDiscardConfirmedMsg is emitted by discardConfirm.onYes when the user
+// confirms abandoning unsaved changes; the page clears editor state.
+type profileDiscardConfirmedMsg struct{}
+
 // askConfirmDiscard arms the "discard unsaved changes?" overlay.
 func (p ProfilesPage) askConfirmDiscard() (tea.Model, tea.Cmd) {
-	answer := false
-	p.confirmDiscardAnswer = &answer
-	form := huh.NewForm(huh.NewGroup(
-		huh.NewConfirm().
-			Title("Discard unsaved changes?").
-			Affirmative("Discard").
-			Negative("Keep editing").
-			Value(p.confirmDiscardAnswer),
-	)).WithShowHelp(false).WithShowErrors(false)
-	p.confirmDiscardForm = form
-	return p, form.Init()
+	p.discardConfirm = components.NewConfirm("Discard unsaved changes?", nil, func(_ any) tea.Cmd {
+		return func() tea.Msg { return profileDiscardConfirmedMsg{} }
+	})
+	return p, p.discardConfirm.Init()
 }
 
 func (p ProfilesPage) updateConfirmDiscard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if msg.String() == "esc" {
-		p.confirmDiscardForm = nil
-		p.confirmDiscardAnswer = nil
+		p.discardConfirm = components.Confirm{}
 		return p, nil
 	}
-	updated, cmd := p.confirmDiscardForm.Update(msg)
-	if f, ok := updated.(*huh.Form); ok {
-		p.confirmDiscardForm = f
-	}
-	if p.confirmDiscardForm != nil && p.confirmDiscardForm.State == huh.StateCompleted {
-		p = p.finalizeConfirmDiscard()
-	}
+	var cmd tea.Cmd
+	p.discardConfirm, cmd = p.discardConfirm.Update(msg)
 	return p, cmd
 }
 
-// finalizeConfirmDiscard consumes the discard-confirmation state. Affirmative
-// drops the editor draft; Negative keeps the user in the editor.
-// Exposed for tests that drive the affirmative/negative paths without
-// relying on huh's internal keymap.
-func (p ProfilesPage) finalizeConfirmDiscard() ProfilesPage {
-	affirmative := p.confirmDiscardAnswer != nil && *p.confirmDiscardAnswer
-	p.confirmDiscardForm = nil
-	p.confirmDiscardAnswer = nil
-	if affirmative {
-		p.editing = false
-		p.form = nil
-		p.draft = nil
-	}
-	return p
-}
-
 func (p ProfilesPage) View() string {
-	if p.confirmDiscardForm != nil {
-		return p.confirmDiscardForm.View()
+	if p.discardConfirm.Active() {
+		return p.discardConfirm.View()
 	}
 	if p.pickerActive {
 		return p.picker.View()
@@ -399,8 +371,8 @@ func (p ProfilesPage) View() string {
 		footer := strings.Join(lines, "\n")
 		return lipgloss.JoinVertical(lipgloss.Left, header, body, filterLine, footer)
 	}
-	if p.confirmDelete && p.confirmForm != nil {
-		return p.confirmForm.View()
+	if p.deleteConfirm.Active() {
+		return p.deleteConfirm.View()
 	}
 
 	left := theme.Pane.Width(p.width / 3).Render(p.list.View())
@@ -440,11 +412,11 @@ func (p ProfilesPage) detailView() string {
 // the status bar. Varies by editor / picker / confirm / list mode.
 func (p ProfilesPage) Hints() string {
 	switch {
-	case p.confirmDiscardForm != nil:
+	case p.discardConfirm.Active():
 		return "[←→] choose  [enter] confirm  [esc] cancel"
 	case p.pickerActive:
 		return "[↑↓] move  [enter] pick  [esc] cancel"
-	case p.confirmDelete:
+	case p.deleteConfirm.Active():
 		return "[←→] choose  [enter] confirm"
 	case p.editing:
 		return "[ctrl+t] sub-tab  [ctrl+p] pick model  [esc] cancel"
@@ -491,7 +463,7 @@ func (p ProfilesPage) launchSelected() (tea.Model, tea.Cmd) {
 // True whenever an editor, picker overlay, or any confirm dialog is on
 // screen — these states need Tab/arrows/enter to navigate huh forms.
 func (p ProfilesPage) IsCapturingInput() bool {
-	return p.editing || p.pickerActive || p.confirmDelete || p.confirmDiscardForm != nil
+	return p.editing || p.pickerActive || p.deleteConfirm.Active() || p.discardConfirm.Active()
 }
 
 // Reload triggers a fresh load from the underlying store. Called by the
@@ -610,47 +582,27 @@ func (p ProfilesPage) previewProfile() domain.Profile {
 
 func (p ProfilesPage) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if msg.String() == "esc" {
-		p.confirmDelete = false
-		p.confirmForm = nil
-		p.confirmAnswer = nil
-		return p, nil
+		p.deleteConfirm = components.Confirm{}
+		p, fc := p.withFlash("delete cancelled")
+		return p, fc
 	}
-
-	updated, cmd := p.confirmForm.Update(msg)
-	if f, ok := updated.(*huh.Form); ok {
-		p.confirmForm = f
-	}
-
-	if p.confirmForm != nil && p.confirmForm.State == huh.StateCompleted {
-		return p.finalizeConfirmDelete(cmd)
-	}
+	var cmd tea.Cmd
+	p.deleteConfirm, cmd = p.deleteConfirm.Update(msg)
 	return p, cmd
 }
 
-// finalizeConfirmDelete consumes the delete confirmation. It is called by
-// both the key path (updateConfirm) and the non-key forwarding path, since
-// huh transitions to StateCompleted via async nextFieldMsg/nextGroupMsg
-// after the user's Enter rather than during the original keypress.
-func (p ProfilesPage) finalizeConfirmDelete(formCmd tea.Cmd) (tea.Model, tea.Cmd) {
-	var id string
-	if p.draft != nil {
-		id = p.draft.ID
-	}
-	affirmative := p.confirmAnswer != nil && *p.confirmAnswer
-	p.confirmDelete = false
-	p.confirmForm = nil
-	p.confirmAnswer = nil
-	if !affirmative {
-		p, fc := p.withFlash("delete cancelled")
-		return p, tea.Batch(formCmd, fc)
-	}
+// performDelete executes the actual store deletion in response to the
+// profileDeleteConfirmedMsg emitted by deleteConfirm.onYes. Splitting it
+// out keeps store I/O and flash mutation on the page rather than inside
+// the Confirm callback closure.
+func (p ProfilesPage) performDelete(id string) (tea.Model, tea.Cmd) {
 	var fc tea.Cmd
 	if err := p.store.Delete(id); err != nil {
 		p, fc = p.withFlash("delete failed: " + err.Error())
 	} else {
 		p, fc = p.withFlash("deleted " + id)
 	}
-	return p, tea.Batch(formCmd, p.loadCmd(), fc)
+	return p, tea.Batch(p.loadCmd(), fc)
 }
 
 func (p ProfilesPage) startNew() (tea.Model, tea.Cmd) {
@@ -739,19 +691,13 @@ func (p ProfilesPage) askDeleteSelected() (tea.Model, tea.Cmd) {
 	default:
 		return p, nil
 	}
-	answer := false
-	p.confirmAnswer = &answer
-	form := huh.NewForm(huh.NewGroup(
-		huh.NewConfirm().
-			Title("Delete profile " + id + "?").
-			Affirmative("Delete").
-			Negative("Cancel").
-			Value(p.confirmAnswer),
-	)).WithShowHelp(false).WithShowErrors(false)
-
-	p.confirmForm = form
-	p.confirmDelete = true
-	// Stash the id so updateConfirm can act on submit.
-	p.draft = &profileDraft{ID: id} // reuse draft.ID just to carry the id
-	return p, form.Init()
+	p.deleteConfirm = components.NewConfirm(
+		"Delete profile "+id+"?",
+		id,
+		func(payload any) tea.Cmd {
+			pid, _ := payload.(string)
+			return func() tea.Msg { return profileDeleteConfirmedMsg{id: pid} }
+		},
+	)
+	return p, p.deleteConfirm.Init()
 }

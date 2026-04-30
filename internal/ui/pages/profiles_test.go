@@ -422,11 +422,8 @@ func TestProfilesPage_DeleteCompletesViaAsyncMsgs(t *testing.T) {
 
 	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlC})
 	final := tm.FinalModel(t).(ProfilesPage)
-	if final.confirmDelete {
-		t.Error("confirmDelete flag should be false after async-driven completion")
-	}
-	if final.confirmForm != nil {
-		t.Error("confirmForm should be nil after finalize")
+	if final.deleteConfirm.Active() {
+		t.Error("deleteConfirm should be inactive after async-driven completion")
 	}
 	// Profile must actually be gone from the store.
 	if _, err := store.Get("doomed"); err == nil {
@@ -462,7 +459,7 @@ func TestProfilesPage_EscWithUnchangedDraftClosesEditor(t *testing.T) {
 	if page.editing {
 		t.Error("esc with unchanged draft should close editor")
 	}
-	if page.confirmDiscardForm != nil {
+	if page.discardConfirm.Active() {
 		t.Error("esc with unchanged draft should not open discard confirm")
 	}
 }
@@ -479,16 +476,19 @@ func TestProfilesPage_EscWithChangedDraftPromptsDiscard(t *testing.T) {
 
 	updated, _ = page.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	page = updated.(ProfilesPage)
-	if page.confirmDiscardForm == nil {
+	if !page.discardConfirm.Active() {
 		t.Fatal("expected discard confirm after esc with mutated draft")
 	}
 	if !page.IsCapturingInput() {
 		t.Fatal("page should capture input while discard confirm is open")
 	}
 
-	// Negative path keeps the editor.
-	*page.confirmDiscardAnswer = false
-	page = page.finalizeConfirmDiscard()
+	// Negative path: esc clears the confirm and keeps the editor.
+	updated, _ = page.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	page = updated.(ProfilesPage)
+	if page.discardConfirm.Active() {
+		t.Error("esc on discard confirm should clear it")
+	}
 	if !page.editing {
 		t.Error("negative discard should keep editor open")
 	}
@@ -496,14 +496,15 @@ func TestProfilesPage_EscWithChangedDraftPromptsDiscard(t *testing.T) {
 		t.Error("negative discard should preserve draft mutations")
 	}
 
-	// Re-open confirm and exercise affirmative path.
+	// Re-open confirm and exercise affirmative path through the
+	// page-level msg deliberately emitted by discardConfirm.onYes.
 	updated, _ = page.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	page = updated.(ProfilesPage)
-	if page.confirmDiscardForm == nil {
+	if !page.discardConfirm.Active() {
 		t.Fatal("expected discard confirm second time")
 	}
-	*page.confirmDiscardAnswer = true
-	page = page.finalizeConfirmDiscard()
+	updated, _ = page.Update(profileDiscardConfirmedMsg{})
+	page = updated.(ProfilesPage)
 	if page.editing {
 		t.Error("affirmative discard should close editor")
 	}
@@ -523,20 +524,20 @@ func TestProfilesPage_DiscardConfirmReceivesInitHandshake(t *testing.T) {
 	page.draft.Name = "Mutated"
 	updated, _ = page.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	page = updated.(ProfilesPage)
-	if page.confirmDiscardForm == nil {
+	if !page.discardConfirm.Active() {
 		t.Fatal("expected discard confirm form")
 	}
 
 	// Pump the discard form's Init cmd back through Update.
 	// If non-key messages were wrongly routed to the hidden editor form,
 	// the discard form would miss its focus/size handshake.
-	initCmd := page.confirmDiscardForm.Init()
+	initCmd := page.discardConfirm.Init()
 	if initCmd != nil {
 		updated, _ = page.Update(initCmd())
 		page = updated.(ProfilesPage)
 	}
 
-	if page.confirmDiscardForm == nil {
+	if !page.discardConfirm.Active() {
 		t.Error("discard confirm was dropped after Init handshake; editor form likely stole it")
 	}
 }
@@ -558,7 +559,7 @@ func TestProfilesPage_HintsVaryByMode(t *testing.T) {
 	}
 	page.pickerActive = false
 
-	page.confirmDelete = true
+	page.deleteConfirm = components.NewConfirm("Delete?", "id", nil)
 	if !strings.Contains(page.Hints(), "[enter] confirm") {
 		t.Errorf("confirm Hints missing [enter] confirm; got %q", page.Hints())
 	}
@@ -582,9 +583,9 @@ func TestProfilesPage_IsCapturingInputDuringEditAndPicker(t *testing.T) {
 		t.Errorf("picker page should capture input")
 	}
 	page.pickerActive = false
-	page.confirmDelete = true
+	page.deleteConfirm = components.NewConfirm("Delete?", "id", nil)
 	if !page.IsCapturingInput() {
-		t.Errorf("confirmDelete page should capture input")
+		t.Errorf("deleteConfirm page should capture input")
 	}
 }
 

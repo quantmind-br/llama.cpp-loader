@@ -8,7 +8,6 @@ import (
 
 	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/quantmind-br/llama-cpp-loader/internal/domain"
@@ -107,17 +106,27 @@ type MonitorPage struct {
 	height             int
 
 	// Kill confirmation overlay (UIUX-002).
-	confirmKillForm     *huh.Form
-	confirmKillAnswer   *bool
-	confirmKillTargetID int
+	killConfirm components.Confirm
 
 	// Restart confirmation overlay.
-	confirmRestartForm     *huh.Form
-	confirmRestartAnswer   *bool
-	confirmRestartTargetID int
-	confirmRestartProfile  domain.Profile
+	restartConfirm components.Confirm
 
 	flash string
+}
+
+// monitorKillConfirmedMsg is emitted by killConfirm.onYes when the user
+// confirms a kill. The page handles it in Update so manager.Kill + refresh
+// stay on the UI thread.
+type monitorKillConfirmedMsg struct{ pid int }
+
+// monitorRestartConfirmedMsg is emitted by restartConfirm.onYes when the user
+// confirms a restart. Carries the captured profile + foreground/background flag
+// so the async kill+launch dispatch has everything it needs without re-reading
+// stale page state.
+type monitorRestartConfirmedMsg struct {
+	pid        int
+	profile    domain.Profile
+	background bool
 }
 
 // monitorPeriodicTickMsg is delivered every 2s by Init/periodicTickCmd to drive
@@ -183,11 +192,11 @@ func (p *MonitorPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// ---- Phase 2: Key routing — confirm overlays first, then actions ----
 	case tea.KeyMsg:
-		if p.confirmKillForm != nil {
+		if p.killConfirm.Active() {
 			cmds = append(cmds, p.handleConfirmKillKey(m))
 			return p, tea.Batch(cmds...)
 		}
-		if p.confirmRestartForm != nil {
+		if p.restartConfirm.Active() {
 			cmds = append(cmds, p.handleConfirmRestartKey(m))
 			return p, tea.Batch(cmds...)
 		}
@@ -234,6 +243,13 @@ func (p *MonitorPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case monitorPeriodicTickMsg:
 		cmds = append(cmds, p.refreshInstancesCmd(), p.periodicTickCmd())
 
+	// ---- Post-confirm action messages emitted by Confirm.onYes ----
+	case monitorKillConfirmedMsg:
+		_ = p.pm.Kill(m.pid)
+		cmds = append(cmds, p.refreshInstancesCmd())
+	case monitorRestartConfirmedMsg:
+		cmds = append(cmds, restartCmd(p.pm, m.pid, m.profile, m.background))
+
 	// ---- Phase 4: Monitor event routing (logs, slots, GPU, health, metrics) ----
 	case monitorEventMsg:
 		if st, ok := p.subs[m.ev.PID]; ok {
@@ -247,35 +263,18 @@ func (p *MonitorPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// ---- Phase 5: Forward non-key messages to confirm forms ----
 	// Required so huh internal Cmds (focus init, button styling refresh) fire.
-	// Each branch must also check StateCompleted and call finalize, since
-	// the form transitions via async nextFieldMsg/nextGroupMsg msgs that
-	// arrive here (the original Enter never reaches the form's submit).
-	if p.confirmKillForm != nil {
-		updated, cmd := p.confirmKillForm.Update(msg)
-		if f, ok := updated.(*huh.Form); ok {
-			p.confirmKillForm = f
-		}
+	if p.killConfirm.Active() {
+		var cmd tea.Cmd
+		p.killConfirm, cmd = p.killConfirm.Update(msg)
 		if cmd != nil {
 			cmds = append(cmds, cmd)
-		}
-		if p.confirmKillForm != nil && p.confirmKillForm.State == huh.StateCompleted {
-			if killCmd := p.finalizeConfirmKill(); killCmd != nil {
-				cmds = append(cmds, killCmd)
-			}
 		}
 	}
-	if p.confirmRestartForm != nil {
-		updated, cmd := p.confirmRestartForm.Update(msg)
-		if f, ok := updated.(*huh.Form); ok {
-			p.confirmRestartForm = f
-		}
+	if p.restartConfirm.Active() {
+		var cmd tea.Cmd
+		p.restartConfirm, cmd = p.restartConfirm.Update(msg)
 		if cmd != nil {
 			cmds = append(cmds, cmd)
-		}
-		if p.confirmRestartForm != nil && p.confirmRestartForm.State == huh.StateCompleted {
-			if restartCmd := p.finalizeConfirmRestart(); restartCmd != nil {
-				cmds = append(cmds, restartCmd)
-			}
 		}
 	}
 
@@ -287,57 +286,40 @@ func (p *MonitorPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return p, tea.Batch(cmds...)
 }
 
-// askConfirmKill builds and arms the kill-confirmation huh form. Returns
-// the form's Init Cmd so its first focus/render dispatch lands.
+// askConfirmKill builds and arms the kill-confirmation overlay. The Confirm's
+// onYes emits monitorKillConfirmedMsg; the actual Kill happens in Update so
+// manager I/O stays on the page.
 func (p *MonitorPage) askConfirmKill(pid int) tea.Cmd {
-	answer := false
-	p.confirmKillAnswer = &answer
-	p.confirmKillTargetID = pid
-	form := huh.NewForm(huh.NewGroup(
-		huh.NewConfirm().
-			Title(fmt.Sprintf("Kill pid=%d?", pid)).
-			Affirmative("Kill").
-			Negative("Cancel").
-			Value(p.confirmKillAnswer),
-	)).WithShowHelp(false).WithShowErrors(false)
-	p.confirmKillForm = form
-	return form.Init()
+	p.killConfirm = components.NewConfirm(
+		fmt.Sprintf("Kill pid=%d?", pid),
+		pid,
+		func(payload any) tea.Cmd {
+			id, _ := payload.(int)
+			return func() tea.Msg { return monitorKillConfirmedMsg{pid: id} }
+		},
+	)
+	return p.killConfirm.Init()
 }
 
 func (p *MonitorPage) handleConfirmKillKey(msg tea.KeyMsg) tea.Cmd {
 	if msg.String() == "esc" {
-		p.confirmKillForm = nil
-		p.confirmKillAnswer = nil
-		p.confirmKillTargetID = 0
+		p.killConfirm = components.Confirm{}
 		return nil
 	}
-	updated, cmd := p.confirmKillForm.Update(msg)
-	if f, ok := updated.(*huh.Form); ok {
-		p.confirmKillForm = f
-	}
-	if p.confirmKillForm != nil && p.confirmKillForm.State == huh.StateCompleted {
-		if killCmd := p.finalizeConfirmKill(); killCmd != nil {
-			return tea.Batch(cmd, killCmd)
-		}
-	}
+	var cmd tea.Cmd
+	p.killConfirm, cmd = p.killConfirm.Update(msg)
 	return cmd
 }
 
-// finalizeConfirmKill consumes the current confirmation state, clears it,
-// and returns a refresh Cmd when the user picked the affirmative button.
-// Exposed package-internal so the affirmative branch can be exercised in
-// tests without driving huh's keymap end-to-end.
-func (p *MonitorPage) finalizeConfirmKill() tea.Cmd {
-	pid := p.confirmKillTargetID
-	affirmative := p.confirmKillAnswer != nil && *p.confirmKillAnswer
-	p.confirmKillForm = nil
-	p.confirmKillAnswer = nil
-	p.confirmKillTargetID = 0
-	if !affirmative {
-		return nil
-	}
-	_ = p.pm.Kill(pid)
-	return p.refreshInstancesCmd()
+// restartPayload bundles the data captured at the moment the user opens the
+// restart confirm. It is the Confirm.payload so onYes can emit a
+// monitorRestartConfirmedMsg with everything needed for the async kill+launch
+// dispatch — no need to re-read p.pm.List() at completion time, which would
+// race with the periodic refresh.
+type restartPayload struct {
+	pid        int
+	profile    domain.Profile
+	background bool
 }
 
 // askConfirmRestart preloads the profile for the selected PID and arms a
@@ -365,64 +347,28 @@ func (p *MonitorPage) askConfirmRestart(pid int) tea.Cmd {
 		p.flash = fmt.Sprintf("restart: profile %q not found", inst.ProfileID)
 		return nil
 	}
-	answer := false
-	p.confirmRestartAnswer = &answer
-	p.confirmRestartTargetID = pid
-	p.confirmRestartProfile = prof
-	form := huh.NewForm(huh.NewGroup(
-		huh.NewConfirm().
-			Title(fmt.Sprintf("Restart pid=%d (%s)?", pid, prof.Name)).
-			Affirmative("Restart").
-			Negative("Cancel").
-			Value(p.confirmRestartAnswer),
-	)).WithShowHelp(false).WithShowErrors(false)
-	p.confirmRestartForm = form
-	return form.Init()
+	payload := restartPayload{pid: pid, profile: prof, background: inst.Background}
+	p.restartConfirm = components.NewConfirm(
+		fmt.Sprintf("Restart pid=%d (%s)?", pid, prof.Name),
+		payload,
+		func(arg any) tea.Cmd {
+			rp, _ := arg.(restartPayload)
+			return func() tea.Msg {
+				return monitorRestartConfirmedMsg{pid: rp.pid, profile: rp.profile, background: rp.background}
+			}
+		},
+	)
+	return p.restartConfirm.Init()
 }
 
 func (p *MonitorPage) handleConfirmRestartKey(msg tea.KeyMsg) tea.Cmd {
 	if msg.String() == "esc" {
-		p.confirmRestartForm = nil
-		p.confirmRestartAnswer = nil
-		p.confirmRestartTargetID = 0
-		p.confirmRestartProfile = domain.Profile{}
+		p.restartConfirm = components.Confirm{}
 		return nil
 	}
-	updated, cmd := p.confirmRestartForm.Update(msg)
-	if f, ok := updated.(*huh.Form); ok {
-		p.confirmRestartForm = f
-	}
-	if p.confirmRestartForm != nil && p.confirmRestartForm.State == huh.StateCompleted {
-		if restartCmd := p.finalizeConfirmRestart(); restartCmd != nil {
-			return tea.Batch(cmd, restartCmd)
-		}
-	}
+	var cmd tea.Cmd
+	p.restartConfirm, cmd = p.restartConfirm.Update(msg)
 	return cmd
-}
-
-// finalizeConfirmRestart consumes the confirmation state and, when affirmative,
-// returns a tea.Cmd that performs kill+launch asynchronously so the Bubble Tea
-// update loop never blocks on process teardown.
-func (p *MonitorPage) finalizeConfirmRestart() tea.Cmd {
-	pid := p.confirmRestartTargetID
-	prof := p.confirmRestartProfile
-	bg := true // default to background; look up from current instance
-	insts := p.pm.List()
-	for _, ri := range insts {
-		if ri.PID == pid {
-			bg = ri.Background
-			break
-		}
-	}
-	affirmative := p.confirmRestartAnswer != nil && *p.confirmRestartAnswer
-	p.confirmRestartForm = nil
-	p.confirmRestartAnswer = nil
-	p.confirmRestartTargetID = 0
-	p.confirmRestartProfile = domain.Profile{}
-	if !affirmative {
-		return nil
-	}
-	return restartCmd(p.pm, pid, prof, bg)
 }
 
 // restartCmd performs Kill then Launch off the UI thread and delivers the
@@ -445,7 +391,7 @@ func restartCmd(pm procMgrIface, pid int, prof domain.Profile, bg bool) tea.Cmd 
 
 // IsCapturingInput tells the root model when the page owns global keys.
 func (p *MonitorPage) IsCapturingInput() bool {
-	return p.confirmKillForm != nil || p.confirmRestartForm != nil
+	return p.killConfirm.Active() || p.restartConfirm.Active()
 }
 
 func (p *MonitorPage) applyInstances(insts []domain.RunningInstance) tea.Cmd {
@@ -535,11 +481,11 @@ func (p *MonitorPage) applyInstances(insts []domain.RunningInstance) tea.Cmd {
 }
 
 func (p *MonitorPage) View() string {
-	if p.confirmKillForm != nil {
-		return p.confirmKillForm.View()
+	if p.killConfirm.Active() {
+		return p.killConfirm.View()
 	}
-	if p.confirmRestartForm != nil {
-		return p.confirmRestartForm.View()
+	if p.restartConfirm.Active() {
+		return p.restartConfirm.View()
 	}
 	header := lipgloss.NewStyle().Bold(true).Render("Running instances")
 	if p.flash != "" {
@@ -618,7 +564,7 @@ func renderSubViewTabs(active SubViewKind) string {
 
 // Hints implements ui.HintProvider for the Monitor tab.
 func (p *MonitorPage) Hints() string {
-	if p.confirmKillForm != nil || p.confirmRestartForm != nil {
+	if p.killConfirm.Active() || p.restartConfirm.Active() {
 		return "[←→] choose  [enter] confirm  [esc] cancel"
 	}
 	return "[v] cycle view  [Space] pause  [k] kill  [r] restart"

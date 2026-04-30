@@ -9,13 +9,13 @@ import (
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/quantmind-br/llama-cpp-loader/internal/domain"
 	"github.com/quantmind-br/llama-cpp-loader/internal/service/processmgr"
 	"github.com/quantmind-br/llama-cpp-loader/internal/service/profilestore"
 	"github.com/quantmind-br/llama-cpp-loader/internal/service/validator"
+	"github.com/quantmind-br/llama-cpp-loader/internal/ui/components"
 	"github.com/quantmind-br/llama-cpp-loader/internal/ui/theme"
 )
 
@@ -38,15 +38,18 @@ type LauncherPage struct {
 	loadErr       error
 
 	// Kill confirmation overlay (UIUX-002).
-	confirmKillForm     *huh.Form
-	confirmKillAnswer   *bool
-	confirmKillTargetID int
+	killConfirm components.Confirm
 
 	// WaitHealthy spinner (UIUX-003). waitingPID > 0 while a launch is
 	// awaiting /health; spin advances on each spinner.TickMsg.
 	spin       spinner.Model
 	waitingPID int
 }
+
+// launcherKillConfirmedMsg is emitted by killConfirm.onYes when the user
+// confirms a kill. The page handles it in Update so manager I/O and status
+// mutation stay on the UI thread.
+type launcherKillConfirmedMsg struct{ pid int }
 
 // NewLauncherPage builds a LauncherPage. manager/validator may be nil for
 // smoke tests (UI degrades gracefully and the launch action is disabled).
@@ -231,9 +234,15 @@ func (p LauncherPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return p, p.launchProfileCmd(selected)
 
-	// ---- Phase 7: Key routing ----
+	// ---- Phase 7: Post-confirm kill action ----
+	case launcherKillConfirmedMsg:
+		var fc tea.Cmd
+		p, fc = p.performKill(msg.pid)
+		return p, fc
+
+	// ---- Phase 8: Key routing ----
 	case tea.KeyMsg:
-		if p.confirmKillForm != nil {
+		if p.killConfirm.Active() {
 			return p.updateConfirmKill(msg)
 		}
 		switch msg.String() {
@@ -257,19 +266,10 @@ func (p LauncherPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	// Forward non-key messages to the confirm form so huh's internal Cmd→Msg
-	// loop (initial focus, validation, button reveal) lands. The form
-	// transitions to StateCompleted via async nextFieldMsg/nextGroupMsg,
-	// not the original Enter — so finalize is checked here too.
-	if p.confirmKillForm != nil {
-		updated, cmd := p.confirmKillForm.Update(msg)
-		if f, ok := updated.(*huh.Form); ok {
-			p.confirmKillForm = f
-		}
-		if p.confirmKillForm != nil && p.confirmKillForm.State == huh.StateCompleted {
-			var clearCmd tea.Cmd
-			p, clearCmd = p.finalizeConfirmKill()
-			return p, tea.Batch(cmd, clearCmd)
-		}
+	// loop (initial focus, validation, button reveal) lands.
+	if p.killConfirm.Active() {
+		var cmd tea.Cmd
+		p.killConfirm, cmd = p.killConfirm.Update(msg)
 		return p, cmd
 	}
 
@@ -278,57 +278,37 @@ func (p LauncherPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return p, cmd
 }
 
-// askConfirmKill builds the kill-confirmation huh form. The actual Kill
-// is deferred until the user picks the affirmative button — see
-// updateConfirmKill.
+// askConfirmKill builds the kill-confirmation overlay. The actual Kill is
+// deferred until launcherKillConfirmedMsg is delivered (emitted by the
+// Confirm.onYes callback when the user picks the affirmative button).
 func (p LauncherPage) askConfirmKill(pid int) (tea.Model, tea.Cmd) {
-	answer := false
-	p.confirmKillAnswer = &answer
-	p.confirmKillTargetID = pid
-	form := huh.NewForm(huh.NewGroup(
-		huh.NewConfirm().
-			Title(fmt.Sprintf("Kill pid=%d?", pid)).
-			Affirmative("Kill").
-			Negative("Cancel").
-			Value(p.confirmKillAnswer),
-	)).WithShowHelp(false).WithShowErrors(false)
-	p.confirmKillForm = form
-	return p, form.Init()
+	p.killConfirm = components.NewConfirm(
+		fmt.Sprintf("Kill pid=%d?", pid),
+		pid,
+		func(payload any) tea.Cmd {
+			id, _ := payload.(int)
+			return func() tea.Msg { return launcherKillConfirmedMsg{pid: id} }
+		},
+	)
+	return p, p.killConfirm.Init()
 }
 
 func (p LauncherPage) updateConfirmKill(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if msg.String() == "esc" {
-		p.confirmKillForm = nil
-		p.confirmKillAnswer = nil
-		p.confirmKillTargetID = 0
-		return p, nil
+		p.killConfirm = components.Confirm{}
+		var fc tea.Cmd
+		p, fc = p.withStatus("kill cancelled")
+		return p, fc
 	}
-	updated, cmd := p.confirmKillForm.Update(msg)
-	if f, ok := updated.(*huh.Form); ok {
-		p.confirmKillForm = f
-	}
-	if p.confirmKillForm != nil && p.confirmKillForm.State == huh.StateCompleted {
-		var clearCmd tea.Cmd
-		p, clearCmd = p.finalizeConfirmKill()
-		return p, tea.Batch(cmd, clearCmd)
-	}
+	var cmd tea.Cmd
+	p.killConfirm, cmd = p.killConfirm.Update(msg)
 	return p, cmd
 }
 
-// finalizeConfirmKill executes the kill (or cancellation) once the confirm
-// form has reached StateCompleted. Exposed as a separate method so tests
-// can drive the affirmative/negative paths without depending on huh's
-// internal keymap. Returns the auto-clear cmd from withStatus so callers
-// can batch it — without it, the kill status would persist indefinitely.
-func (p LauncherPage) finalizeConfirmKill() (LauncherPage, tea.Cmd) {
-	pid := p.confirmKillTargetID
-	affirmative := p.confirmKillAnswer != nil && *p.confirmKillAnswer
-	p.confirmKillForm = nil
-	p.confirmKillAnswer = nil
-	p.confirmKillTargetID = 0
-	if !affirmative {
-		return p.withStatus("kill cancelled")
-	}
+// performKill executes the actual Kill in response to launcherKillConfirmedMsg.
+// Pulled out of the Confirm callback so manager I/O and status updates remain
+// on the page (the Confirm callback only emits a tea.Cmd).
+func (p LauncherPage) performKill(pid int) (LauncherPage, tea.Cmd) {
 	if err := p.manager.Kill(pid); err != nil {
 		return p.withStatus("error: " + err.Error())
 	}
@@ -346,7 +326,7 @@ func (p LauncherPage) finalizeConfirmKill() (LauncherPage, tea.Cmd) {
 // true while a confirm dialog is on screen so its arrows / enter / y/n
 // reach the form instead of being interpreted as tab shortcuts.
 func (p LauncherPage) IsCapturingInput() bool {
-	return p.confirmKillForm != nil
+	return p.killConfirm.Active()
 }
 
 // withStatus sets the terminal status message (post-launch outcome,
@@ -387,8 +367,8 @@ func (p LauncherPage) launchProfileCmd(selected domain.Profile) tea.Cmd {
 }
 
 func (p LauncherPage) View() string {
-	if p.confirmKillForm != nil {
-		return p.confirmKillForm.View()
+	if p.killConfirm.Active() {
+		return p.killConfirm.View()
 	}
 	if p.loadErr != nil {
 		return theme.Subtitle.Render(fmt.Sprintf("load profiles: %v", p.loadErr))
@@ -456,7 +436,7 @@ func (p LauncherPage) View() string {
 
 // Hints implements ui.HintProvider for the Launcher tab.
 func (p LauncherPage) Hints() string {
-	if p.confirmKillForm != nil {
+	if p.killConfirm.Active() {
 		return "[←→] choose  [enter] confirm  [esc] cancel"
 	}
 	return "[b] mode  [enter] launch  [k] kill last  [r] refresh"

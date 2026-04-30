@@ -14,6 +14,7 @@ import (
 	"github.com/quantmind-br/llama-cpp-loader/internal/domain"
 	"github.com/quantmind-br/llama-cpp-loader/internal/service/monitor"
 	"github.com/quantmind-br/llama-cpp-loader/internal/service/processmgr"
+	"github.com/quantmind-br/llama-cpp-loader/internal/ui/components"
 	"github.com/quantmind-br/llama-cpp-loader/internal/ui/theme"
 )
 
@@ -176,7 +177,7 @@ func TestMonitorPage_KOpensConfirmDoesNotKillImmediately(t *testing.T) {
 	if pm.killed != 0 {
 		t.Fatalf("k should not kill immediately; killed=%d", pm.killed)
 	}
-	if p.confirmKillForm == nil {
+	if !p.killConfirm.Active() {
 		t.Fatal("expected confirm form after k")
 	}
 	if !p.IsCapturingInput() {
@@ -185,7 +186,7 @@ func TestMonitorPage_KOpensConfirmDoesNotKillImmediately(t *testing.T) {
 
 	// Esc cancels.
 	p, _ = updateAs[*MonitorPage](p, tea.KeyMsg{Type: tea.KeyEsc})
-	if p.confirmKillForm != nil {
+	if p.killConfirm.Active() {
 		t.Fatal("esc should clear confirm form")
 	}
 	if pm.killed != 0 {
@@ -202,21 +203,25 @@ func TestMonitorPage_FinalizeConfirmAffirmativeCallsKill(t *testing.T) {
 
 	// Open the confirm form via the normal key path.
 	p, _ = updateAs[*MonitorPage](p, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
-	if p.confirmKillForm == nil {
+	if !p.killConfirm.Active() {
 		t.Fatal("expected confirm form after k")
 	}
-	// Drive the affirmative branch via the package-internal helper. This
-	// bypasses huh's confirm key dance which is unreliable in unit tests.
-	*p.confirmKillAnswer = true
-	if cmd := p.finalizeConfirmKill(); cmd == nil {
-		t.Fatal("affirmative finalize should return a refresh Cmd")
+	// Simulate the affirmative completion path. In production huh drives
+	// the form to StateCompleted, Confirm.Update emits the onYes msg and
+	// clears the form. Here we replicate both halves: clear the confirm
+	// (mirroring Confirm.Update's clear) and inject the msg the onYes
+	// callback would emit.
+	p.killConfirm = components.Confirm{}
+	p, cmd := updateAs[*MonitorPage](p, monitorKillConfirmedMsg{pid: 7})
+	if cmd == nil {
+		t.Fatal("affirmative completion should return a refresh Cmd")
 	}
 
 	if pm.killed != 7 {
 		t.Fatalf("expected Kill(7) after affirmative, got Kill(%d)", pm.killed)
 	}
-	if p.confirmKillForm != nil {
-		t.Fatal("confirm form should be cleared after finalize")
+	if p.killConfirm.Active() {
+		t.Fatal("confirm form should be cleared after completion")
 	}
 }
 
@@ -228,9 +233,10 @@ func TestMonitorPage_FinalizeConfirmNegativeNoKill(t *testing.T) {
 	p, _ = updateAs[*MonitorPage](p, monitorInstancesRefreshedMsg{insts: pm.List()})
 	p, _ = updateAs[*MonitorPage](p, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
 
-	*p.confirmKillAnswer = false
-	if cmd := p.finalizeConfirmKill(); cmd != nil {
-		t.Errorf("negative finalize should return nil; got %v", cmd)
+	// Esc clears the confirm without invoking onYes.
+	p, _ = updateAs[*MonitorPage](p, tea.KeyMsg{Type: tea.KeyEsc})
+	if p.killConfirm.Active() {
+		t.Error("esc should clear killConfirm")
 	}
 	if pm.killed != 0 {
 		t.Errorf("negative finalize should not kill; killed=%d", pm.killed)
@@ -364,7 +370,7 @@ func TestMonitorPage_ROpensRestartConfirm(t *testing.T) {
 
 	p, _ = updateAs[*MonitorPage](p, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
 
-	if p.confirmRestartForm == nil {
+	if !p.restartConfirm.Active() {
 		t.Fatal("expected restart confirm form after r")
 	}
 	if !p.IsCapturingInput() {
@@ -373,7 +379,7 @@ func TestMonitorPage_ROpensRestartConfirm(t *testing.T) {
 
 	// Esc cancels.
 	p, _ = updateAs[*MonitorPage](p, tea.KeyMsg{Type: tea.KeyEsc})
-	if p.confirmRestartForm != nil {
+	if p.restartConfirm.Active() {
 		t.Fatal("esc should clear restart confirm form")
 	}
 	if pm.killedPID != 0 {
@@ -394,19 +400,33 @@ func TestMonitorPage_RestartConfirmAffirmativeKillsAndLaunches(t *testing.T) {
 	p, _ = updateAs[*MonitorPage](p, monitorInstancesRefreshedMsg{insts: pm.List()})
 
 	p, _ = updateAs[*MonitorPage](p, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
-	if p.confirmRestartForm == nil {
+	if !p.restartConfirm.Active() {
 		t.Fatal("expected restart confirm form")
 	}
 
-	*p.confirmRestartAnswer = true
-	cmd := p.finalizeConfirmRestart()
+	// Affirmative completion: emit the msg restartConfirm.onYes would build.
+	p.restartConfirm = components.Confirm{}
+	_, cmd := updateAs[*MonitorPage](p, monitorRestartConfirmedMsg{
+		pid:        100,
+		profile:    prof,
+		background: true,
+	})
 	if cmd == nil {
-		t.Fatal("affirmative finalize should return a Cmd")
+		t.Fatal("affirmative completion should return a Cmd")
 	}
-	msg := cmd()
-	if rr, ok := msg.(restartResultMsg); !ok {
-		t.Fatalf("msg type = %T, want restartResultMsg", msg)
-	} else if rr.err != nil {
+	// Drain to find the restartResultMsg.
+	got := drainCmd(cmd)
+	var rr *restartResultMsg
+	for _, m := range got {
+		if v, ok := m.(restartResultMsg); ok {
+			rr = &v
+			break
+		}
+	}
+	if rr == nil {
+		t.Fatalf("no restartResultMsg in cmd batch; got %v", got)
+	}
+	if rr.err != nil {
 		t.Fatalf("restartResultMsg.err = %v", rr.err)
 	}
 
@@ -434,9 +454,10 @@ func TestMonitorPage_RestartConfirmNegativeNoAction(t *testing.T) {
 	p, _ = updateAs[*MonitorPage](p, monitorInstancesRefreshedMsg{insts: pm.List()})
 	p, _ = updateAs[*MonitorPage](p, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
 
-	*p.confirmRestartAnswer = false
-	if cmd := p.finalizeConfirmRestart(); cmd != nil {
-		t.Errorf("negative finalize should return nil; got %v", cmd)
+	// Esc clears the confirm without invoking onYes.
+	p, _ = updateAs[*MonitorPage](p, tea.KeyMsg{Type: tea.KeyEsc})
+	if p.restartConfirm.Active() {
+		t.Error("esc should clear restartConfirm")
 	}
 	if pm.killedPID != 0 {
 		t.Errorf("negative finalize should not kill; killed=%d", pm.killedPID)
@@ -456,15 +477,29 @@ func TestMonitorPage_RestartConfirmForegroundPreservesMode(t *testing.T) {
 	p, _ = updateAs[*MonitorPage](p, monitorInstancesRefreshedMsg{insts: pm.List()})
 	p, _ = updateAs[*MonitorPage](p, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
 
-	*p.confirmRestartAnswer = true
-	cmd := p.finalizeConfirmRestart()
+	// Foreground instance — confirm should preserve mode through to the
+	// monitorRestartConfirmedMsg's background flag.
+	p.restartConfirm = components.Confirm{}
+	_, cmd := updateAs[*MonitorPage](p, monitorRestartConfirmedMsg{
+		pid:        100,
+		profile:    prof,
+		background: false,
+	})
 	if cmd == nil {
-		t.Fatal("affirmative finalize should return a Cmd")
+		t.Fatal("affirmative completion should return a Cmd")
 	}
-	msg := cmd()
-	if rr, ok := msg.(restartResultMsg); !ok {
-		t.Fatalf("msg type = %T, want restartResultMsg", msg)
-	} else if rr.err != nil {
+	got := drainCmd(cmd)
+	var rr *restartResultMsg
+	for _, m := range got {
+		if v, ok := m.(restartResultMsg); ok {
+			rr = &v
+			break
+		}
+	}
+	if rr == nil {
+		t.Fatalf("no restartResultMsg in cmd batch; got %v", got)
+	}
+	if rr.err != nil {
 		t.Fatalf("restartResultMsg.err = %v", rr.err)
 	}
 	if pm.launchMode != processmgr.LaunchForeground {
@@ -481,7 +516,7 @@ func TestMonitorPage_RFlashWhenStoreNil(t *testing.T) {
 	p, _ = updateAs[*MonitorPage](p, monitorInstancesRefreshedMsg{insts: pm.List()})
 
 	p, _ = updateAs[*MonitorPage](p, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
-	if p.confirmRestartForm != nil {
+	if p.restartConfirm.Active() {
 		t.Fatal("nil store should not open confirm form")
 	}
 	if !strings.Contains(p.flash, "store not available") {
@@ -499,7 +534,7 @@ func TestMonitorPage_RFlashWhenProfileMissing(t *testing.T) {
 	p, _ = updateAs[*MonitorPage](p, monitorInstancesRefreshedMsg{insts: pm.List()})
 
 	p, _ = updateAs[*MonitorPage](p, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
-	if p.confirmRestartForm != nil {
+	if p.restartConfirm.Active() {
 		t.Fatal("missing profile should not open confirm form")
 	}
 	if !strings.Contains(p.flash, "not found") {

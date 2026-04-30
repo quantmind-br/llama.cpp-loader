@@ -152,7 +152,7 @@ func TestLauncherPage_KOpensConfirmDoesNotKillImmediately(t *testing.T) {
 
 	updated, _ := page.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
 	page = updated.(LauncherPage)
-	if page.confirmKillForm == nil {
+	if !page.killConfirm.Active() {
 		t.Fatal("expected confirm form after k")
 	}
 	if !page.IsCapturingInput() {
@@ -180,9 +180,9 @@ func TestLauncherPage_FinalizeAffirmativeRemovesInstance(t *testing.T) {
 	updated, _ := page.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
 	page = updated.(LauncherPage)
 
-	// Drive affirmative path directly.
-	*page.confirmKillAnswer = true
-	page, _ = page.finalizeConfirmKill()
+	// Drive affirmative path via the msg killConfirm.onYes would emit.
+	updated, _ = page.Update(launcherKillConfirmedMsg{pid: 4242})
+	page = updated.(LauncherPage)
 	if len(page.running) != 0 {
 		t.Errorf("running len after kill = %d, want 0", len(page.running))
 	}
@@ -202,8 +202,12 @@ func TestLauncherPage_FinalizeNegativeKeepsInstance(t *testing.T) {
 	updated, _ := page.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
 	page = updated.(LauncherPage)
 
-	*page.confirmKillAnswer = false
-	page, _ = page.finalizeConfirmKill()
+	// Esc cancels the confirm without invoking onYes — instance stays.
+	updated, _ = page.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	page = updated.(LauncherPage)
+	if page.killConfirm.Active() {
+		t.Error("esc should clear killConfirm")
+	}
 	if len(page.running) != 1 {
 		t.Errorf("negative finalize should keep instance; running len=%d", len(page.running))
 	}
@@ -249,8 +253,8 @@ func TestLauncherPage_KillCompletesViaAsyncMsgs(t *testing.T) {
 
 	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlC})
 	final := tm.FinalModel(t).(LauncherPage)
-	if final.confirmKillForm != nil {
-		t.Error("confirmKillForm should be nil after async-driven completion")
+	if final.killConfirm.Active() {
+		t.Error("killConfirm should be inactive after async-driven completion")
 	}
 	if len(final.running) != 0 {
 		t.Errorf("running len = %d, want 0", len(final.running))
