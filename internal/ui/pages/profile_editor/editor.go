@@ -89,9 +89,6 @@ func (e Editor) Active() bool {
 	return e.active || e.discardConfirm.Active()
 }
 
-// Init returns nil; the form's Init runs through Open's Cmd.
-func (e Editor) Init() tea.Cmd { return nil }
-
 // Open starts editing the given draft. Resets sub-tab to Essentials and
 // clears any advanced-filter state from a previous session. Returns the
 // form's Init Cmd so huh's focus/styling handshake fires.
@@ -135,13 +132,6 @@ func (e Editor) CurrentDraft() Draft {
 		return Draft{}
 	}
 	return *e.draft
-}
-
-// SubTabIsAdvanced reports whether the editor currently shows the
-// advanced flag-reference table (true) or the Essentials huh form
-// (false). Exposed for hint-bar / status-bar wording.
-func (e Editor) SubTabIsAdvanced() bool {
-	return e.subTab == subTabAdvanced
 }
 
 // View renders the editor: discard confirm if open, else header +

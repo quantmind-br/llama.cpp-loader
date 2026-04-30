@@ -277,12 +277,12 @@ func TestEditor_ViewIncludesHeaderWhenActive(t *testing.T) {
 	}
 }
 
-// TestEditor_FormCompletionEmitsCommitted simulates a form completion
-// by reaching past the form: rather than walking huh's full state
-// machine in unit tests (driven by teatest at the page level), we
-// directly test the close+emit codepath via the closer's contract.
-// This keeps the unit test focused on Editor's contract not huh's.
-func TestEditor_FormCompletionEmitsCommitted(t *testing.T) {
+// TestEditor_CommitMsgCarriesDraft verifies the message-payload
+// contract: when the editor closes after a (simulated) commit, the
+// EditorCommittedMsg carries the draft fields intact. This does NOT
+// drive huh.StateCompleted through Update — that path requires teatest
+// infrastructure and is exercised at the page level.
+func TestEditor_CommitMsgCarriesDraft(t *testing.T) {
 	e := New(domain.FlagSchema{})
 	e, _ = e.Open(Draft{ID: "x", Name: "Y"})
 

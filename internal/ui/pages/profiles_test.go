@@ -440,6 +440,39 @@ func TestProfilesPage_IsCapturingInputDuringEditAndPicker(t *testing.T) {
 	}
 }
 
+// TestProfilesPage_DiscardConfirmKeepsInputCaptured verifies the
+// page-level capture contract while the editor's discard-confirm is
+// open. Regression cover: the equivalent editor-level test
+// (TestEditor_EscOnDirtyDraftPromptsDiscard) cannot prove that
+// ProfilesPage.IsCapturingInput() flows through editor.Active() — only
+// a page-level test can. Without this, the global shortcut gate could
+// silently regress to stealing keys away from the discard prompt.
+func TestProfilesPage_DiscardConfirmKeepsInputCaptured(t *testing.T) {
+	dir := t.TempDir()
+	store, _ := profilestore.NewFSStore(dir)
+	page := NewProfilesPage(store, domain.FlagSchema{})
+
+	// Open a fresh editor and dirty the draft so esc routes through the
+	// discard-confirm path instead of closing immediately.
+	updated, _ := page.startNew()
+	page = updated.(ProfilesPage)
+	if !page.editor.Active() {
+		t.Fatal("expected editor active after startNew")
+	}
+	page.editor, _ = page.editor.SetModelPath("/dirty/model.gguf")
+
+	// esc on dirty draft should arm the discard-confirm overlay.
+	updated, _ = page.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	page = updated.(ProfilesPage)
+
+	if !page.IsCapturingInput() {
+		t.Fatal("page must capture input while discard-confirm is open")
+	}
+	if !page.editor.Active() {
+		t.Errorf("editor.Active() must remain true while discard-confirm is open")
+	}
+}
+
 // [?] help token is now owned by the global status bar (see
 // ui/root_test.go TestRoot_StatusBarMentionsHelp). Pages publish their
 // own hints via the HintProvider contract — see TestProfilesPage_Hints*.
