@@ -16,6 +16,7 @@ import (
 	"github.com/quantmind-br/llama-cpp-loader/internal/service/modelscanner"
 	"github.com/quantmind-br/llama-cpp-loader/internal/service/profilestore"
 	"github.com/quantmind-br/llama-cpp-loader/internal/ui/components"
+	"github.com/quantmind-br/llama-cpp-loader/internal/ui/internal/filter"
 	"github.com/quantmind-br/llama-cpp-loader/internal/ui/theme"
 )
 
@@ -336,17 +337,7 @@ func (p ModelsPage) handleScanEvent(evt domain.ScanEvent) (tea.Model, tea.Cmd) {
 }
 
 func (p ModelsPage) visibleFiles() []domain.ModelFile {
-	files := p.files
-	if p.filter != "" {
-		q := strings.ToLower(p.filter)
-		filtered := make([]domain.ModelFile, 0, len(files))
-		for _, f := range files {
-			if strings.Contains(strings.ToLower(f.Name), q) {
-				filtered = append(filtered, f)
-			}
-		}
-		files = filtered
-	}
+	files := filter.ContainsFold(p.files, p.filter, func(f domain.ModelFile) string { return f.Name })
 	sort.Slice(files, func(i, j int) bool { return files[i].Name < files[j].Name })
 	return files
 }

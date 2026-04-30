@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/quantmind-br/llama-cpp-loader/internal/domain"
+	"github.com/quantmind-br/llama-cpp-loader/internal/ui/internal/filter"
 	"github.com/quantmind-br/llama-cpp-loader/internal/ui/theme"
 )
 
@@ -192,17 +193,11 @@ func (m ModelPicker) Update(msg tea.Msg) (ModelPicker, tea.Cmd) {
 }
 
 func (m *ModelPicker) applyFilter() {
-	if m.filter == "" {
-		m.filtered = append(m.filtered[:0], m.files...)
-	} else {
-		q := strings.ToLower(m.filter)
-		m.filtered = m.filtered[:0]
-		for _, f := range m.files {
-			if strings.Contains(strings.ToLower(f.Name), q) {
-				m.filtered = append(m.filtered, f)
-			}
-		}
-	}
+	matched := filter.ContainsFold(m.files, m.filter, func(f domain.ModelFile) string { return f.Name })
+	// Clone into the persistent m.filtered buffer so the subsequent sort
+	// never mutates m.files (ContainsFold returns the input slice header
+	// when filter is empty).
+	m.filtered = append(m.filtered[:0], matched...)
 	sort.Slice(m.filtered, func(i, j int) bool { return m.filtered[i].Name < m.filtered[j].Name })
 	if m.cursor >= len(m.filtered) {
 		m.cursor = 0

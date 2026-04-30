@@ -5,12 +5,12 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
-	"strings"
 
 	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/huh"
 
 	"github.com/quantmind-br/llama-cpp-loader/internal/domain"
+	"github.com/quantmind-br/llama-cpp-loader/internal/ui/internal/filter"
 )
 
 type subTab int
@@ -182,15 +182,5 @@ func truncate(s string, max int) string {
 
 // filterRows returns rows whose Flag column contains q (case-insensitive).
 func filterRows(all []table.Row, q string) []table.Row {
-	if q == "" {
-		return all
-	}
-	q = strings.ToLower(q)
-	out := make([]table.Row, 0, len(all))
-	for _, r := range all {
-		if strings.Contains(strings.ToLower(r[0]), q) {
-			out = append(out, r)
-		}
-	}
-	return out
+	return filter.ContainsFold(all, q, func(r table.Row) string { return r[0] })
 }
