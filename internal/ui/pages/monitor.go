@@ -525,60 +525,82 @@ func (p *MonitorPage) View() string {
 	if p.restartConfirm.Active() {
 		return p.restartConfirm.View()
 	}
+	if len(p.tbl.Rows()) == 0 {
+		header := lipgloss.NewStyle().Bold(true).Render("Running instances")
+		if p.flash != "" {
+			header = theme.Error.Render(p.flash) + "\n" + header
+		}
+		return header + "\n" + theme.Subtitle.Render("(no instances running — switch to Launcher [2] to start one)")
+	}
+	return p.renderTable() + "\n\n" + p.renderStatusLine() + "\n" + p.renderSubViewBody()
+}
+
+// renderTable renders the bold "Running instances" header (prefixed with the
+// flash banner when set) followed by the bubbletea instances table.
+func (p *MonitorPage) renderTable() string {
 	header := lipgloss.NewStyle().Bold(true).Render("Running instances")
 	if p.flash != "" {
 		header = theme.Error.Render(p.flash) + "\n" + header
 	}
-	if len(p.tbl.Rows()) == 0 {
-		return header + "\n" + theme.Subtitle.Render("(no instances running — switch to Launcher [2] to start one)")
-	}
-	top := header + "\n" + p.tbl.View()
-	subviewTabs := renderSubViewTabs(p.subView)
+	return header + "\n" + p.tbl.View()
+}
+
+// renderStatusLine renders the Logs / Slots / Metrics tab strip that sits
+// between the instance table and the active sub-view body.
+func (p *MonitorPage) renderStatusLine() string {
+	return renderSubViewTabs(p.subView)
+}
+
+// renderSubViewBody renders the body of the active sub-view (logs, slots, or
+// metrics) for the currently-selected instance, or a fallback string when no
+// subscription state is available.
+func (p *MonitorPage) renderSubViewBody() string {
 	pid := p.selectedPID()
 	st := p.subs[pid]
-	bottom := "no subscription"
-	if st != nil {
-		switch p.subView {
-		case SubViewLogs:
-			start := len(st.logs) - 10
-			if start < 0 {
-				start = 0
-			}
-			bottom = strings.Join(st.logs[start:], "\n")
-			if bottom == "" {
-				bottom = "(no log lines yet)"
-			}
-			if p.paused {
-				bottom = theme.Warn.Render("Logs (PAUSED — Space to resume)") + "\n" + bottom
-			}
-			if len(st.logs) > 10 {
-				bottom += "\n" + theme.Subtitle.Render(fmt.Sprintf("— showing last 10 of %d (Space pauses, buffer 2000)", len(st.logs)))
-			}
-		case SubViewSlots:
-			var b strings.Builder
-			b.WriteString("idx | state      | ctx used/max | client\n")
-			for _, s := range st.slots.Slots {
-				fmt.Fprintf(&b, "%-3d | %-10s | %5d/%-5d | %s\n", s.ID, s.State, s.NCtxUsed, s.NCtxMax, s.Client)
-			}
-			bottom = b.String()
-			if bottom == "idx | state      | ctx used/max | client\n" {
-				bottom = "(no slot data yet)"
-			}
-		case SubViewMetrics:
-			if len(st.mets.TokensPerSec) == 0 && len(st.mets.RequestsPerSec) == 0 {
-				bottom = "(no metrics yet — first sample arrives after the slots tick)"
-				break
-			}
-			var b strings.Builder
-			fmt.Fprintf(&b, "tokens/s: %s\n", theme.OK.Render(components.Sparkline(st.mets.TokensPerSec, 40)))
-			fmt.Fprintf(&b, "req/s   : %s\n", theme.Warn.Render(components.Sparkline(st.mets.RequestsPerSec, 40)))
-			if st.gpu.VRAMTotalMB > 0 {
-				fmt.Fprintf(&b, "VRAM    : %d/%d MB  util %.0f%%\n", st.gpu.VRAMUsedMB, st.gpu.VRAMTotalMB, st.gpu.Utilization)
-			}
-			bottom = b.String()
-		}
+	if st == nil {
+		return "no subscription"
 	}
-	return top + "\n\n" + subviewTabs + "\n" + bottom
+	switch p.subView {
+	case SubViewLogs:
+		start := len(st.logs) - 10
+		if start < 0 {
+			start = 0
+		}
+		bottom := strings.Join(st.logs[start:], "\n")
+		if bottom == "" {
+			bottom = "(no log lines yet)"
+		}
+		if p.paused {
+			bottom = theme.Warn.Render("Logs (PAUSED — Space to resume)") + "\n" + bottom
+		}
+		if len(st.logs) > 10 {
+			bottom += "\n" + theme.Subtitle.Render(fmt.Sprintf("— showing last 10 of %d (Space pauses, buffer 2000)", len(st.logs)))
+		}
+		return bottom
+	case SubViewSlots:
+		var b strings.Builder
+		b.WriteString("idx | state      | ctx used/max | client\n")
+		for _, s := range st.slots.Slots {
+			fmt.Fprintf(&b, "%-3d | %-10s | %5d/%-5d | %s\n", s.ID, s.State, s.NCtxUsed, s.NCtxMax, s.Client)
+		}
+		bottom := b.String()
+		if bottom == "idx | state      | ctx used/max | client\n" {
+			bottom = "(no slot data yet)"
+		}
+		return bottom
+	case SubViewMetrics:
+		if len(st.mets.TokensPerSec) == 0 && len(st.mets.RequestsPerSec) == 0 {
+			return "(no metrics yet — first sample arrives after the slots tick)"
+		}
+		var b strings.Builder
+		fmt.Fprintf(&b, "tokens/s: %s\n", theme.OK.Render(components.Sparkline(st.mets.TokensPerSec, 40)))
+		fmt.Fprintf(&b, "req/s   : %s\n", theme.Warn.Render(components.Sparkline(st.mets.RequestsPerSec, 40)))
+		if st.gpu.VRAMTotalMB > 0 {
+			fmt.Fprintf(&b, "VRAM    : %d/%d MB  util %.0f%%\n", st.gpu.VRAMUsedMB, st.gpu.VRAMTotalMB, st.gpu.Utilization)
+		}
+		return b.String()
+	}
+	return "no subscription"
 }
 
 // renderSubViewTabs draws the Logs / Slots / Metrics tab strip with the

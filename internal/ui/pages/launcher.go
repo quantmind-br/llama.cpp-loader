@@ -410,6 +410,16 @@ func (p LauncherPage) View() string {
 		return theme.Subtitle.Render("(no profiles yet — switch to Profiles [1] to create one)")
 	}
 
+	parts := []string{p.renderProfileDetail(), "", p.renderRunningList()}
+	if status := p.renderStatusLine(); status != "" {
+		parts = append(parts, status)
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, parts...)
+}
+
+// renderProfileDetail renders the two-pane body: profile list on the left and
+// the selected profile's metadata (or a "no selection" hint) on the right.
+func (p LauncherPage) renderProfileDetail() string {
 	var rightContent string
 	if it, ok := p.plist.SelectedItem().(profileItem); ok {
 		mode := "Foreground"
@@ -437,34 +447,41 @@ func (p LauncherPage) View() string {
 	}
 	left := theme.Pane.Width(leftW).Render(p.plist.View())
 	right := theme.Pane.Width(rightW).Render(rightContent)
-	body := lipgloss.JoinHorizontal(lipgloss.Top, left, right)
+	return lipgloss.JoinHorizontal(lipgloss.Top, left, right)
+}
 
-	runningView := "Running: (none)"
-	if len(p.running) > 0 {
-		lines := []string{theme.Subtitle.Render("Running")}
-		for _, ri := range p.running {
-			tag := "fg"
-			if ri.Background {
-				tag = "bg"
-			}
-			lines = append(lines, fmt.Sprintf("  %s pid=%d port=%d %s", ri.ProfileID, ri.PID, ri.Port, tag))
-		}
-		runningView = strings.Join(lines, "\n")
+// renderRunningList renders the "Running" section listing live instances, or
+// the "Running: (none)" placeholder when no instances are tracked.
+func (p LauncherPage) renderRunningList() string {
+	if len(p.running) == 0 {
+		return "Running: (none)"
 	}
-	parts := []string{body, "", runningView}
-	if p.status != "" {
-		statusLine := p.status
-		if p.waitingPID != 0 {
-			statusLine = p.spin.View() + " " + statusLine
+	lines := []string{theme.Subtitle.Render("Running")}
+	for _, ri := range p.running {
+		tag := "fg"
+		if ri.Background {
+			tag = "bg"
 		}
-		style := theme.Subtitle
-		if !p.statusAt.IsZero() && time.Since(p.statusAt) >= flashDimAfter {
-			style = style.Faint(true)
-		}
-		parts = append(parts, style.Render(statusLine))
+		lines = append(lines, fmt.Sprintf("  %s pid=%d port=%d %s", ri.ProfileID, ri.PID, ri.Port, tag))
 	}
+	return strings.Join(lines, "\n")
+}
 
-	return lipgloss.JoinVertical(lipgloss.Left, parts...)
+// renderStatusLine renders the bottom status flash (with optional spinner) or
+// returns an empty string when there is no active status to show.
+func (p LauncherPage) renderStatusLine() string {
+	if p.status == "" {
+		return ""
+	}
+	statusLine := p.status
+	if p.waitingPID != 0 {
+		statusLine = p.spin.View() + " " + statusLine
+	}
+	style := theme.Subtitle
+	if !p.statusAt.IsZero() && time.Since(p.statusAt) >= flashDimAfter {
+		style = style.Faint(true)
+	}
+	return style.Render(statusLine)
 }
 
 // Hints implements ui.HintProvider for the Launcher tab.
