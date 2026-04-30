@@ -432,7 +432,20 @@ func (p *MonitorPage) IsCapturingInput() bool {
 	return p.killConfirm.Active() || p.restartConfirm.Active()
 }
 
+// applyInstances reconciles the page's per-PID table rows and subscription
+// state against a fresh instance list. Decomposed into single-purpose helpers:
+// row rendering, cursor clamping, subscription bring-up, and dead-sub reaping.
 func (p *MonitorPage) applyInstances(insts []domain.RunningInstance) tea.Cmd {
+	p.tbl.SetRows(p.renderRows(insts))
+	p.clampCursor(len(insts))
+	cmds := p.ensureSubscriptions(insts)
+	p.reapDeadSubscriptions(insts)
+	return tea.Batch(cmds...)
+}
+
+// renderRows formats one table row per instance. Crashed instances get an
+// error-styled badge across every column.
+func (p *MonitorPage) renderRows(insts []domain.RunningInstance) []table.Row {
 	rows := make([]table.Row, 0, len(insts))
 	for _, ri := range insts {
 		pidCol := fmt.Sprintf("%d", ri.PID)
@@ -465,18 +478,25 @@ func (p *MonitorPage) applyInstances(insts []domain.RunningInstance) tea.Cmd {
 			uptime, vram, toks,
 		})
 	}
-	p.tbl.SetRows(rows)
-	// Bubbles' table doesn't auto-clamp the cursor when rows shrink, so
-	// SelectedRow can later return an empty Row and panic on row[0].
-	if cur := p.tbl.Cursor(); cur >= len(rows) {
-		if len(rows) == 0 {
+	return rows
+}
+
+// clampCursor pulls the table cursor back into range when the row count
+// shrinks. Bubbles' table doesn't auto-clamp, so SelectedRow can later
+// return an empty Row and panic on row[0] without this.
+func (p *MonitorPage) clampCursor(rowCount int) {
+	if cur := p.tbl.Cursor(); cur >= rowCount {
+		if rowCount == 0 {
 			p.tbl.SetCursor(0)
 		} else {
-			p.tbl.SetCursor(len(rows) - 1)
+			p.tbl.SetCursor(rowCount - 1)
 		}
 	}
+}
 
-	// Add subs for new (non-crashed) instances; collect listenCmds.
+// ensureSubscriptions starts a subscription for each non-crashed instance
+// that doesn't already have one, returning a listenCmd per new subscription.
+func (p *MonitorPage) ensureSubscriptions(insts []domain.RunningInstance) []tea.Cmd {
 	var cmds []tea.Cmd
 	for _, ri := range insts {
 		if ri.Crashed {
@@ -493,29 +513,27 @@ func (p *MonitorPage) applyInstances(insts []domain.RunningInstance) tea.Cmd {
 		p.chans[ri.PID] = ch
 		cmds = append(cmds, listenCmd(ch))
 	}
-	// Cancel subs for crashed insts (data sources are dead) and for orphans
-	// (PID no longer in the list at all). Async cancel preserves UI thread.
-	seen := make(map[int]bool, len(insts))
+	return cmds
+}
+
+// reapDeadSubscriptions cancels and drops any subscription whose PID is
+// either absent from insts (orphan) or marked Crashed (data source dead).
+// Cancel runs in a goroutine so a slow teardown can't stall the UI thread.
+func (p *MonitorPage) reapDeadSubscriptions(insts []domain.RunningInstance) {
+	byPID := make(map[int]domain.RunningInstance, len(insts))
 	for _, ri := range insts {
-		seen[ri.PID] = true
-		if ri.Crashed {
-			if st, ok := p.subs[ri.PID]; ok {
-				cancel := st.cancel
-				go func() { _ = cancel() }()
-				delete(p.subs, ri.PID)
-				delete(p.chans, ri.PID)
-			}
-		}
+		byPID[ri.PID] = ri
 	}
 	for pid, st := range p.subs {
-		if !seen[pid] {
-			cancel := st.cancel
-			go func() { _ = cancel() }() // do not block UI on subscription teardown
-			delete(p.subs, pid)
-			delete(p.chans, pid)
+		inst, present := byPID[pid]
+		if present && !inst.Crashed {
+			continue
 		}
+		cancel := st.cancel
+		go func() { _ = cancel() }()
+		delete(p.subs, pid)
+		delete(p.chans, pid)
 	}
-	return tea.Batch(cmds...)
 }
 
 func (p *MonitorPage) View() string {

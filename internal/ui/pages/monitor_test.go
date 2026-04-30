@@ -961,3 +961,188 @@ func TestSubState_Apply_Metrics(t *testing.T) {
 		t.Fatalf("expected mets replaced with rolling window; got %#v", s.mets)
 	}
 }
+
+// --- CQ-003: per-helper tests for the decomposed applyInstances pipeline ---
+
+// TestMonitorPage_ApplyInstances_RendersRows feeds N instances and asserts the
+// table has N rows whose key columns reflect the input.
+func TestMonitorPage_ApplyInstances_RendersRows(t *testing.T) {
+	pm := &fakeProcMgr{}
+	mm := fakeMonMgr{}
+	p := NewMonitorPage(pm, mm, nil)
+	p.SetSize(120, 30)
+
+	insts := []domain.RunningInstance{
+		{PID: 11, Port: 7000, ProfileID: "alpha", LogPath: "/tmp/a.log"},
+		{PID: 22, Port: 7001, ProfileID: "beta", LogPath: "/tmp/b.log"},
+		{PID: 33, Port: 7002, ProfileID: "gamma", LogPath: "/tmp/c.log"},
+	}
+	p.applyInstances(insts)
+
+	rows := p.tbl.Rows()
+	if len(rows) != 3 {
+		t.Fatalf("rows: got %d, want 3", len(rows))
+	}
+	for i, want := range insts {
+		if !strings.Contains(rows[i][0], fmt.Sprintf("%d", want.PID)) {
+			t.Fatalf("row %d pid col %q missing pid %d", i, rows[i][0], want.PID)
+		}
+		if !strings.Contains(rows[i][1], fmt.Sprintf("%d", want.Port)) {
+			t.Fatalf("row %d port col %q missing port %d", i, rows[i][1], want.Port)
+		}
+		if !strings.Contains(rows[i][2], want.ProfileID) {
+			t.Fatalf("row %d profile col %q missing %q", i, rows[i][2], want.ProfileID)
+		}
+	}
+}
+
+// TestMonitorPage_ApplyInstances_EnsuresSubscription verifies that a fresh
+// non-crashed instance gets registered in p.subs and p.chans.
+func TestMonitorPage_ApplyInstances_EnsuresSubscription(t *testing.T) {
+	pm := &fakeProcMgr{}
+	mm := &chanMonMgr{ch: make(chan monitor.MonitorEvent, 1)}
+	p := NewMonitorPage(pm, mm, nil)
+	p.SetSize(120, 30)
+
+	p.applyInstances([]domain.RunningInstance{
+		{PID: 42, Port: 8080, ProfileID: "p1", LogPath: "/tmp/x.log"},
+	})
+
+	if st, ok := p.subs[42]; !ok || st == nil {
+		t.Fatalf("expected p.subs[42] to be non-nil, got ok=%v st=%v", ok, st)
+	}
+	if ch, ok := p.chans[42]; !ok || ch == nil {
+		t.Fatalf("expected p.chans[42] to be non-nil, got ok=%v ch=%v", ok, ch)
+	}
+}
+
+// TestMonitorPage_ApplyInstances_ReapsCrashed pre-populates a subscription
+// then feeds the same PID with Crashed=true. The collapsed reap loop must
+// drop both the subs and chans entry for that PID.
+func TestMonitorPage_ApplyInstances_ReapsCrashed(t *testing.T) {
+	var cancelCalled int32
+	pm := &fakeProcMgr{}
+	mm := &countingMonMgr{
+		ch:       make(chan monitor.MonitorEvent, 1),
+		onCancel: func() { atomic.AddInt32(&cancelCalled, 1) },
+	}
+	p := NewMonitorPage(pm, mm, nil)
+	p.SetSize(120, 30)
+
+	// Bring up the sub via a normal (non-crashed) refresh.
+	p.applyInstances([]domain.RunningInstance{
+		{PID: 99, Port: 8080, ProfileID: "p1", LogPath: "/tmp/x.log"},
+	})
+	if _, ok := p.subs[99]; !ok {
+		t.Fatal("setup: expected sub for pid 99")
+	}
+
+	// Now the same PID is reported as crashed.
+	p.applyInstances([]domain.RunningInstance{
+		{PID: 99, Port: 8080, ProfileID: "p1", LogPath: "/tmp/x.log", Crashed: true},
+	})
+
+	if _, ok := p.subs[99]; ok {
+		t.Fatal("expected p.subs[99] to be deleted after crash")
+	}
+	if _, ok := p.chans[99]; ok {
+		t.Fatal("expected p.chans[99] to be deleted after crash")
+	}
+	for i := 0; i < 100 && atomic.LoadInt32(&cancelCalled) == 0; i++ {
+		time.Sleep(2 * time.Millisecond)
+	}
+	if got := atomic.LoadInt32(&cancelCalled); got != 1 {
+		t.Fatalf("cancel called %d times, want 1", got)
+	}
+}
+
+// TestMonitorPage_ApplyInstances_ReapsOrphan pre-populates two PIDs (A, B)
+// then feeds the input list with only A. B's subscription must be dropped.
+func TestMonitorPage_ApplyInstances_ReapsOrphan(t *testing.T) {
+	var cancelCalled int32
+	pm := &fakeProcMgr{}
+	mm := &countingMonMgr{
+		ch:       make(chan monitor.MonitorEvent, 4),
+		onCancel: func() { atomic.AddInt32(&cancelCalled, 1) },
+	}
+	p := NewMonitorPage(pm, mm, nil)
+	p.SetSize(120, 30)
+
+	// Bring up subs for A=10 and B=20.
+	p.applyInstances([]domain.RunningInstance{
+		{PID: 10, Port: 8080, ProfileID: "p1", LogPath: "/tmp/a.log"},
+		{PID: 20, Port: 8081, ProfileID: "p2", LogPath: "/tmp/b.log"},
+	})
+	if _, ok := p.subs[10]; !ok {
+		t.Fatal("setup: expected sub for pid 10")
+	}
+	if _, ok := p.subs[20]; !ok {
+		t.Fatal("setup: expected sub for pid 20")
+	}
+
+	// Input now omits PID 20 entirely (orphan).
+	p.applyInstances([]domain.RunningInstance{
+		{PID: 10, Port: 8080, ProfileID: "p1", LogPath: "/tmp/a.log"},
+	})
+
+	if _, ok := p.subs[10]; !ok {
+		t.Fatal("expected p.subs[10] to be retained")
+	}
+	if _, ok := p.subs[20]; ok {
+		t.Fatal("expected p.subs[20] to be deleted (orphan)")
+	}
+	if _, ok := p.chans[20]; ok {
+		t.Fatal("expected p.chans[20] to be deleted (orphan)")
+	}
+	for i := 0; i < 100 && atomic.LoadInt32(&cancelCalled) == 0; i++ {
+		time.Sleep(2 * time.Millisecond)
+	}
+	if got := atomic.LoadInt32(&cancelCalled); got != 1 {
+		t.Fatalf("cancel called %d times, want 1 (only orphan B)", got)
+	}
+}
+
+// TestMonitorPage_ApplyInstances_NoLeakOnAllCrashed launches N instances,
+// then crashes all of them in a single applyInstances call. Both maps must
+// be empty afterwards — proving the collapsed reap loop covers the
+// "everything died at once" case.
+func TestMonitorPage_ApplyInstances_NoLeakOnAllCrashed(t *testing.T) {
+	var cancelCalled int32
+	pm := &fakeProcMgr{}
+	mm := &countingMonMgr{
+		ch:       make(chan monitor.MonitorEvent, 8),
+		onCancel: func() { atomic.AddInt32(&cancelCalled, 1) },
+	}
+	p := NewMonitorPage(pm, mm, nil)
+	p.SetSize(120, 30)
+
+	live := []domain.RunningInstance{
+		{PID: 1, Port: 8080, ProfileID: "p1", LogPath: "/tmp/1.log"},
+		{PID: 2, Port: 8081, ProfileID: "p2", LogPath: "/tmp/2.log"},
+		{PID: 3, Port: 8082, ProfileID: "p3", LogPath: "/tmp/3.log"},
+	}
+	p.applyInstances(live)
+	if len(p.subs) != 3 || len(p.chans) != 3 {
+		t.Fatalf("setup: got subs=%d chans=%d, want 3/3", len(p.subs), len(p.chans))
+	}
+
+	crashed := make([]domain.RunningInstance, len(live))
+	for i, ri := range live {
+		ri.Crashed = true
+		crashed[i] = ri
+	}
+	p.applyInstances(crashed)
+
+	if len(p.subs) != 0 {
+		t.Fatalf("expected p.subs empty after all-crashed, got %d entries", len(p.subs))
+	}
+	if len(p.chans) != 0 {
+		t.Fatalf("expected p.chans empty after all-crashed, got %d entries", len(p.chans))
+	}
+	for i := 0; i < 100 && atomic.LoadInt32(&cancelCalled) < 3; i++ {
+		time.Sleep(2 * time.Millisecond)
+	}
+	if got := atomic.LoadInt32(&cancelCalled); got != 3 {
+		t.Fatalf("cancel called %d times, want 3 (one per crashed instance)", got)
+	}
+}
