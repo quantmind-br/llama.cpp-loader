@@ -41,3 +41,12 @@ func scheduleFlashClear(tag string, at time.Time) tea.Cmd {
 		return flashClearMsg{tag: tag, at: at}
 	})
 }
+
+// truncate clips s to max runes, replacing the last with "…" when the
+// input is longer. Used by ModelsPage for table-cell shortening.
+func truncate(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max-1] + "…"
+}

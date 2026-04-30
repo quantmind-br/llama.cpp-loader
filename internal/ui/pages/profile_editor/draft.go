@@ -1,5 +1,8 @@
-// Package pages holds tab page implementations.
-package pages
+// Package profile_editor encapsulates the profile editor sub-model
+// (form, draft, sub-tab, advanced table, discard-confirm) extracted from
+// ProfilesPage. The page composes an Editor by value and forwards messages
+// to it while it is Active.
+package profile_editor
 
 import (
 	"fmt"
@@ -13,6 +16,8 @@ import (
 	"github.com/quantmind-br/llama-cpp-loader/internal/ui/internal/filter"
 )
 
+// subTab selects between the Essentials huh form and the Advanced
+// flag-reference table inside the editor.
 type subTab int
 
 const (
@@ -27,8 +32,16 @@ func (s subTab) String() string {
 	return "Advanced"
 }
 
-// profileDraft is the editor's mutable state, mapped from huh form back to a Profile on save.
-type profileDraft struct {
+// Draft is the editor's mutable state. It is exported because it crosses
+// the package boundary via EditorCommittedMsg. Callers use Draft in two
+// places only:
+//   - Constructing a Draft to pass to Editor.Open.
+//   - Reading the saved Draft out of EditorCommittedMsg in their Update.
+//
+// Mutation while the editor is open is internal: the huh form binds
+// &field pointers on a heap-allocated *Draft so bubbletea's value-copy
+// idiom does not invalidate the binding addresses.
+type Draft struct {
 	ID          string // immutable once created
 	Name        string
 	Description string
@@ -41,16 +54,13 @@ type profileDraft struct {
 	FlashAttn   string
 	CacheTypeK  string
 	CacheTypeV  string
-	isNew       bool
+	IsNew       bool
 }
 
-// toProfile maps the editor draft to a domain.Profile. Always sets
+// ToProfile maps the editor draft to a domain.Profile. Always sets
 // ngl/ctx-size/port (zero on parse fail) so save and live preview produce
 // the same shape. Caller owns ID generation and Meta preservation.
-func (d *profileDraft) toProfile() domain.Profile {
-	if d == nil {
-		return domain.Profile{}
-	}
+func (d Draft) ToProfile() domain.Profile {
 	ngl, _ := strconv.Atoi(d.NGL)
 	ctx, _ := strconv.Atoi(d.CtxSize)
 	port, _ := strconv.Atoi(d.Port)
@@ -84,7 +94,10 @@ func (d *profileDraft) toProfile() domain.Profile {
 	}
 }
 
-func argString(v any) string {
+// ArgString converts a stored args-map value to its editor-string form.
+// Exported because callers (ProfilesPage.startEditSelected) need it to
+// hydrate a Draft from an existing domain.Profile.
+func ArgString(v any) string {
 	switch t := v.(type) {
 	case nil:
 		return ""
@@ -99,11 +112,10 @@ func argString(v any) string {
 	}
 }
 
-// flashAttnToString converts a stored flash-attn value to the editor's
-// string form. Existing profiles may have boolean values from earlier
-// versions of the editor; map true → "on", false → "off". Strings pass
-// through; anything else falls back to "auto".
-func flashAttnToString(v any) string {
+// FlashAttnToString converts a stored flash-attn value to the editor's
+// string form. Older profiles may have boolean values; map true → "on",
+// false → "off". Strings pass through; anything else falls back to "auto".
+func FlashAttnToString(v any) string {
 	switch t := v.(type) {
 	case string:
 		return t
@@ -117,7 +129,7 @@ func flashAttnToString(v any) string {
 	}
 }
 
-func buildEditorForm(d *profileDraft, schema domain.FlagSchema) *huh.Form {
+func buildForm(d *Draft, schema domain.FlagSchema) *huh.Form {
 	cacheOpts := selectOptions(schema, "cache-type-k", []string{"f16", "q8_0", "q4_0"})
 	return huh.NewForm(
 		huh.NewGroup(

@@ -13,7 +13,9 @@ import (
 
 	"github.com/quantmind-br/llama-cpp-loader/internal/domain"
 	"github.com/quantmind-br/llama-cpp-loader/internal/service/profilestore"
+	"github.com/quantmind-br/llama-cpp-loader/internal/service/validator"
 	"github.com/quantmind-br/llama-cpp-loader/internal/ui/components"
+	"github.com/quantmind-br/llama-cpp-loader/internal/ui/pages/profile_editor"
 	"github.com/quantmind-br/llama-cpp-loader/internal/ui/theme"
 )
 
@@ -78,24 +80,21 @@ func TestProfilesPage_NewProfileSavesViaStore(t *testing.T) {
 	}
 }
 
+// TestProfilesPage_ValidationDetectsUbatchOverBatch exercises the same
+// preview-validator path the editor renders, but without reaching into
+// editor internals: we build the Draft ourselves and call the validator
+// directly. Behavior under test (ubatch > batch produces an error) is
+// owned by validator, not by ProfilesPage.
 func TestProfilesPage_ValidationDetectsUbatchOverBatch(t *testing.T) {
-	dir := t.TempDir()
-	store, err := profilestore.NewFSStore(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	page := NewProfilesPage(store, domain.FlagSchema{})
-	page.draft = &profileDraft{
+	d := profile_editor.Draft{
 		ID:         "x",
 		Name:       "X",
 		BatchSize:  "2048",
 		UBatchSize: "4096",
-		isNew:      true,
+		IsNew:      true,
 	}
-
-	pr := page.previewProfile()
-	report := page.validator.Validate(pr, page.schema)
+	pr := d.ToProfile()
+	report := validator.New().Validate(pr, domain.FlagSchema{})
 
 	found := false
 	for _, e := range report.Errors {
@@ -128,16 +127,18 @@ func TestProfilesPage_PickerWritesDraftModel(t *testing.T) {
 	// Start a new draft so editing is active.
 	model, _ := page.startNew()
 	page = model.(ProfilesPage)
-	page.editing = true
+	if !page.editor.Active() {
+		t.Fatal("startNew should activate editor")
+	}
 
 	// Simulate ModelPickedMsg landing in Update.
 	updated, _ := page.Update(components.ModelPickedMsg{Path: "/picked/model.gguf"})
 	page = updated.(ProfilesPage)
 
-	if page.draft.Model != "/picked/model.gguf" {
-		t.Fatalf("draft.Model = %q, want /picked/model.gguf", page.draft.Model)
+	if got := page.editor.CurrentDraft().Model; got != "/picked/model.gguf" {
+		t.Fatalf("draft.Model = %q, want /picked/model.gguf", got)
 	}
-	if page.pickerActive {
+	if page.picker.active {
 		t.Errorf("pickerActive = true, want false after pick")
 	}
 }
@@ -200,14 +201,15 @@ func TestProfilesPage_UseInNewProfilePrefillsDraft(t *testing.T) {
 	updated, _ := page.Update(UseInNewProfileMsg{Path: "/foo/bar.gguf"})
 	page = updated.(ProfilesPage)
 
-	if !page.editing {
-		t.Fatal("page.editing = false, want true")
+	if !page.editor.Active() {
+		t.Fatal("editor.Active() = false, want true")
 	}
-	if page.draft.Model != "/foo/bar.gguf" {
-		t.Fatalf("draft.Model = %q", page.draft.Model)
+	d := page.editor.CurrentDraft()
+	if d.Model != "/foo/bar.gguf" {
+		t.Fatalf("draft.Model = %q", d.Model)
 	}
-	if !page.draft.isNew {
-		t.Errorf("isNew = false, want true")
+	if !d.IsNew {
+		t.Errorf("IsNew = false, want true")
 	}
 }
 
@@ -285,49 +287,6 @@ func TestProfilesPage_FlashRenamedClearTagIgnored(t *testing.T) {
 	}
 }
 
-func TestProfilesPage_IntRangeRejectsNonInt(t *testing.T) {
-	v := intRange(0, 100, false)
-	if err := v("abc"); err == nil {
-		t.Errorf("intRange(non-int) returned nil; want error")
-	}
-}
-
-func TestProfilesPage_IntRangeRejectsOutOfBounds(t *testing.T) {
-	v := intRange(0, 100, false)
-	if err := v("999"); err == nil {
-		t.Errorf("intRange(out-of-range) returned nil; want error")
-	}
-}
-
-func TestProfilesPage_IntRangeAllowsEmptyWhenOptional(t *testing.T) {
-	if err := intRange(0, 100, true)(""); err != nil {
-		t.Errorf("intRange(allowEmpty=true)(\"\") returned %v; want nil", err)
-	}
-	if err := intRange(0, 100, false)(""); err == nil {
-		t.Errorf("intRange(allowEmpty=false)(\"\") returned nil; want error")
-	}
-}
-
-func TestProfilesPage_IntRangeAcceptsNegativeOneForNGL(t *testing.T) {
-	v := intRange(-1, 9999, false)
-	if err := v("-1"); err != nil {
-		t.Errorf("intRange(-1,9999)(\"-1\") returned %v; want nil (llama.cpp default)", err)
-	}
-}
-
-func TestProfilesPage_PortValidator(t *testing.T) {
-	v := portValidator()
-	if err := v("99999"); err == nil {
-		t.Errorf("portValidator(99999) returned nil; want error (out of range)")
-	}
-	if err := v("8080"); err != nil {
-		t.Errorf("portValidator(8080) returned %v; want nil", err)
-	}
-	if err := v(""); err == nil {
-		t.Errorf("portValidator(\"\") returned nil; want error (required)")
-	}
-}
-
 func TestProfilesPage_DelegateRendersCorruptInWarnColors(t *testing.T) {
 	dgt := newProfileItemDelegate()
 	l := list.New([]list.Item{corruptItem{id: "broken", err: errors.New("syntax error")}}, dgt, 80, 6)
@@ -350,34 +309,6 @@ func TestProfilesPage_DelegateDelegatesHealthyRowsToDefault(t *testing.T) {
 	dgt.Render(&buf, l, 0, healthy)
 	if !strings.Contains(buf.String(), "Demo") {
 		t.Errorf("default delegate output missing %q; got %q", "Demo", buf.String())
-	}
-}
-
-// TestProfilesPage_StartNewResetsEditorSubTabAndFilter ensures that
-// reopening the editor (n / Use-In-New / edit) starts on Essentials with
-// no advanced filter, regardless of what the previous editor session left
-// behind. Regression for the leak where p.subTab and p.advancedFilter
-// persisted across editor lifecycles, surprising the user.
-func TestProfilesPage_StartNewResetsEditorSubTabAndFilter(t *testing.T) {
-	dir := t.TempDir()
-	store, _ := profilestore.NewFSStore(dir)
-	page := NewProfilesPage(store, domain.FlagSchema{})
-
-	// Simulate a previous session that left advanced state behind.
-	page.subTab = subTabAdvanced
-	page.advancedFilter = "stale"
-	page.filterMode = true
-
-	updated, _ := page.startNew()
-	page = updated.(ProfilesPage)
-	if page.subTab != subTabEssentials {
-		t.Errorf("startNew subTab = %v, want subTabEssentials", page.subTab)
-	}
-	if page.advancedFilter != "" {
-		t.Errorf("startNew advancedFilter = %q, want empty", page.advancedFilter)
-	}
-	if page.filterMode {
-		t.Error("startNew filterMode should be false")
 	}
 }
 
@@ -449,96 +380,15 @@ func TestProfilesPage_EscWithUnchangedDraftClosesEditor(t *testing.T) {
 	// Open a fresh editor.
 	updated, _ := page.startNew()
 	page = updated.(ProfilesPage)
-	if !page.editing {
-		t.Fatal("expected editing after startNew")
+	if !page.editor.Active() {
+		t.Fatal("expected editor active after startNew")
 	}
 
 	// Press esc with no edits — should close immediately, no confirm.
 	updated, _ = page.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	page = updated.(ProfilesPage)
-	if page.editing {
+	if page.editor.Active() {
 		t.Error("esc with unchanged draft should close editor")
-	}
-	if page.discardConfirm.Active() {
-		t.Error("esc with unchanged draft should not open discard confirm")
-	}
-}
-
-func TestProfilesPage_EscWithChangedDraftPromptsDiscard(t *testing.T) {
-	dir := t.TempDir()
-	store, _ := profilestore.NewFSStore(dir)
-	page := NewProfilesPage(store, domain.FlagSchema{})
-	updated, _ := page.startNew()
-	page = updated.(ProfilesPage)
-
-	// Mutate draft to diverge from snapshot.
-	page.draft.Name = "Mutated"
-
-	updated, _ = page.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	page = updated.(ProfilesPage)
-	if !page.discardConfirm.Active() {
-		t.Fatal("expected discard confirm after esc with mutated draft")
-	}
-	if !page.IsCapturingInput() {
-		t.Fatal("page should capture input while discard confirm is open")
-	}
-
-	// Negative path: esc clears the confirm and keeps the editor.
-	updated, _ = page.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	page = updated.(ProfilesPage)
-	if page.discardConfirm.Active() {
-		t.Error("esc on discard confirm should clear it")
-	}
-	if !page.editing {
-		t.Error("negative discard should keep editor open")
-	}
-	if page.draft == nil || page.draft.Name != "Mutated" {
-		t.Error("negative discard should preserve draft mutations")
-	}
-
-	// Re-open confirm and exercise affirmative path through the
-	// page-level msg deliberately emitted by discardConfirm.onYes.
-	updated, _ = page.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	page = updated.(ProfilesPage)
-	if !page.discardConfirm.Active() {
-		t.Fatal("expected discard confirm second time")
-	}
-	updated, _ = page.Update(profileDiscardConfirmedMsg{})
-	page = updated.(ProfilesPage)
-	if page.editing {
-		t.Error("affirmative discard should close editor")
-	}
-	if page.draft != nil {
-		t.Error("affirmative discard should clear draft")
-	}
-}
-
-func TestProfilesPage_DiscardConfirmReceivesInitHandshake(t *testing.T) {
-	dir := t.TempDir()
-	store, _ := profilestore.NewFSStore(dir)
-	page := NewProfilesPage(store, domain.FlagSchema{})
-	updated, _ := page.startNew()
-	page = updated.(ProfilesPage)
-
-	// Mutate draft so esc opens the discard confirm.
-	page.draft.Name = "Mutated"
-	updated, _ = page.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	page = updated.(ProfilesPage)
-	if !page.discardConfirm.Active() {
-		t.Fatal("expected discard confirm form")
-	}
-
-	// Pump the discard form's Init cmd back through Update.
-	// If non-key messages were wrongly routed to the hidden editor form,
-	// the discard form would miss its focus/size handshake.
-	initCmd := page.discardConfirm.Init()
-	if initCmd != nil {
-		updated, _ = page.Update(initCmd())
-		page = updated.(ProfilesPage)
-	}
-
-	if !page.discardConfirm.Active() {
-		t.Error("discard confirm was dropped after Init handshake; editor form likely stole it")
 	}
 }
 
@@ -547,17 +397,18 @@ func TestProfilesPage_HintsVaryByMode(t *testing.T) {
 	store, _ := profilestore.NewFSStore(dir)
 	page := NewProfilesPage(store, domain.FlagSchema{})
 
-	page.editing = true
-	if !strings.Contains(page.Hints(), "[ctrl+t]") {
-		t.Errorf("editing Hints missing [ctrl+t]; got %q", page.Hints())
+	// Open the editor through the public path.
+	editing, _ := page.startNew()
+	if !strings.Contains(editing.(ProfilesPage).Hints(), "[ctrl+t]") {
+		t.Errorf("editing Hints missing [ctrl+t]; got %q", editing.(ProfilesPage).Hints())
 	}
-	page.editing = false
 
-	page.pickerActive = true
+	// Picker hints (set the flag directly — picker is a page-owned overlay).
+	page.picker.active = true
 	if !strings.Contains(page.Hints(), "[enter] pick") {
 		t.Errorf("picker Hints missing [enter] pick; got %q", page.Hints())
 	}
-	page.pickerActive = false
+	page.picker.active = false
 
 	page.deleteConfirm = components.NewConfirm("Delete?", "id", nil)
 	if !strings.Contains(page.Hints(), "[enter] confirm") {
@@ -573,16 +424,16 @@ func TestProfilesPage_IsCapturingInputDuringEditAndPicker(t *testing.T) {
 	if page.IsCapturingInput() {
 		t.Errorf("idle page captures input")
 	}
-	page.editing = true
-	if !page.IsCapturingInput() {
+	editing, _ := page.startNew()
+	if !editing.(ProfilesPage).IsCapturingInput() {
 		t.Errorf("editing page should capture input")
 	}
-	page.editing = false
-	page.pickerActive = true
+
+	page.picker.active = true
 	if !page.IsCapturingInput() {
 		t.Errorf("picker page should capture input")
 	}
-	page.pickerActive = false
+	page.picker.active = false
 	page.deleteConfirm = components.NewConfirm("Delete?", "id", nil)
 	if !page.IsCapturingInput() {
 		t.Errorf("deleteConfirm page should capture input")

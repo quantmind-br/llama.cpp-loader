@@ -3,132 +3,53 @@ package pages
 
 import (
 	"fmt"
-	"io"
-	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/list"
-	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/quantmind-br/llama-cpp-loader/internal/domain"
 	"github.com/quantmind-br/llama-cpp-loader/internal/service/profilestore"
-	"github.com/quantmind-br/llama-cpp-loader/internal/service/validator"
 	"github.com/quantmind-br/llama-cpp-loader/internal/ui/components"
+	"github.com/quantmind-br/llama-cpp-loader/internal/ui/pages/profile_editor"
 	"github.com/quantmind-br/llama-cpp-loader/internal/ui/theme"
 )
 
+// modelPickerOverlay groups the page-owned ctrl+p picker overlay state
+// (active flag, the picker model, and the scanner/paths used to seed it).
+// Bundled so ProfilesPage stays under the 12-field cap from CQ-002.
+type modelPickerOverlay struct {
+	active    bool
+	picker    components.ModelPicker
+	scanner   components.ModelScanner
+	scanPaths []string
+}
+
 // ProfilesPage is the master-detail page for managing profiles.
+//
+// After CQ-002 the editor (form, draft, sub-tab, advanced table,
+// discard-confirm) lives in a profile_editor.Editor sub-model. The page
+// keeps only master-list, delete-confirm, picker overlay, status flash.
 type ProfilesPage struct {
-	store     profilestore.Store
-	schema    domain.FlagSchema
-	validator validator.Validator
+	store  profilestore.Store
+	schema domain.FlagSchema
 
 	list     list.Model
 	listKeys profilesKeyMap
 	width    int
 	height   int
 
-	// Detail/edit state.
-	editing bool
-	subTab  subTab
-	form    *huh.Form
-	// draft is a heap pointer so &draft.Field bindings inside the huh form
-	// stay valid across the value-receiver copies of ProfilesPage that
-	// bubbletea makes on every Update. A value field would escape to a
-	// different address each copy and the form would write to a stale draft.
-	draft         *profileDraft
+	editor        profile_editor.Editor
 	deleteConfirm components.Confirm
-
-	// Discard-unsaved-changes confirmation overlay (UIUX-002).
-	editorOpenSnapshot profileDraft
-	discardConfirm     components.Confirm
-
-	// Advanced sub-tab state.
-	advanced       table.Model
-	advancedAll    []table.Row
-	advancedFilter string
-	filterMode     bool
 
 	// Status feedback.
 	flash   string
 	flashAt time.Time
 
 	// Picker overlay (slice 3).
-	pickerActive bool
-	picker       components.ModelPicker
-	scanner      components.ModelScanner
-	scanPaths    []string
-}
-
-type profilesKeyMap struct {
-	New, Save, Duplicate, Delete, Edit, Cancel, Tab, Launch key.Binding
-}
-
-func defaultProfilesKeys() profilesKeyMap {
-	return profilesKeyMap{
-		New:       key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "new")),
-		Save:      key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "save")),
-		Duplicate: key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "dup")),
-		Delete:    key.NewBinding(key.WithKeys("x"), key.WithHelp("x", "del")),
-		Edit:      key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "edit")),
-		Cancel:    key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "cancel")),
-		Tab:       key.NewBinding(key.WithKeys("ctrl+t"), key.WithHelp("ctrl+t", "tab editor")),
-		Launch:    key.NewBinding(key.WithKeys("L"), key.WithHelp("L", "launch")),
-	}
-}
-
-// item adapts domain.Profile to bubbles/list.
-type item struct {
-	p domain.Profile
-}
-
-func (i item) Title() string       { return i.p.Name }
-func (i item) Description() string { return i.p.ID }
-func (i item) FilterValue() string { return i.p.Name + " " + i.p.ID }
-
-// corruptItem is a list row representing a profile JSON entry that failed
-// to parse. Edit/duplicate are no-ops; delete is allowed so the user can
-// remove the bad file. Implementa design § 8 — "marca entry com ⚠,
-// exclui de operações até user fix/delete".
-type corruptItem struct {
-	id  string
-	err error
-}
-
-func (c corruptItem) Title() string       { return "⚠ " + c.id }
-func (c corruptItem) Description() string { return "corrupt: " + c.err.Error() }
-func (c corruptItem) FilterValue() string { return c.id }
-
-// profileItemDelegate wraps list.DefaultDelegate to paint corruptItem rows
-// in warn/error theme colors so they stand out from healthy entries. Healthy
-// rows fall through to the default delegate's rendering.
-type profileItemDelegate struct {
-	list.DefaultDelegate
-}
-
-func newProfileItemDelegate() profileItemDelegate {
-	return profileItemDelegate{DefaultDelegate: list.NewDefaultDelegate()}
-}
-
-func (d profileItemDelegate) Render(w io.Writer, m list.Model, index int, item list.Item) {
-	c, ok := item.(corruptItem)
-	if !ok {
-		d.DefaultDelegate.Render(w, m, index, item)
-		return
-	}
-	title := theme.Error.Render("⚠ " + c.id)
-	desc := theme.Warn.Render("corrupt: " + c.err.Error())
-	if index == m.Index() {
-		// Mirror the default delegate's "selected" indent ("> ") to keep the
-		// cursor position visible even on corrupt rows.
-		fmt.Fprintf(w, "> %s\n  %s", title, desc)
-		return
-	}
-	fmt.Fprintf(w, "  %s\n  %s", title, desc)
+	picker modelPickerOverlay
 }
 
 // NewProfilesPage constructs the page wired to a Store and FlagSchema.
@@ -139,22 +60,19 @@ func NewProfilesPage(store profilestore.Store, schema domain.FlagSchema) Profile
 	l.SetShowHelp(false)
 	l.SetShowStatusBar(false)
 
-	tbl := newAdvancedTable(schema, 100, 12)
 	return ProfilesPage{
-		store:       store,
-		schema:      schema,
-		validator:   validator.New(),
-		advanced:    tbl,
-		advancedAll: tbl.Rows(),
-		list:        l,
-		listKeys:    defaultProfilesKeys(),
+		store:    store,
+		schema:   schema,
+		editor:   profile_editor.New(schema),
+		list:     l,
+		listKeys: defaultProfilesKeys(),
 	}
 }
 
 // WithModelScanner enables the ctrl+p model picker overlay in the editor.
 func (p ProfilesPage) WithModelScanner(scanner components.ModelScanner, paths []string) ProfilesPage {
-	p.scanner = scanner
-	p.scanPaths = paths
+	p.picker.scanner = scanner
+	p.picker.scanPaths = paths
 	return p
 }
 
@@ -177,9 +95,9 @@ func (p ProfilesPage) loadCmd() tea.Cmd {
 }
 
 // Update is a thin dispatcher: each typed-message arm delegates to a
-// private handle<MsgType> method. Non-key messages fall through to
-// forwardToConfirms so active huh forms can complete their internal
-// Cmd→Msg handshakes.
+// private handle<MsgType> method. Non-key messages forward to the editor
+// (when active) or to forwardToConfirms so active huh forms can complete
+// their internal Cmd→Msg handshakes.
 func (p ProfilesPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -198,12 +116,14 @@ func (p ProfilesPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return p.handleModelPickerCancelled(m)
 	case profileDeleteConfirmedMsg:
 		return p.performDelete(m.id)
-	case profileDiscardConfirmedMsg:
-		return p.handleDiscardConfirmed(m)
+	case profile_editor.EditorCommittedMsg:
+		return p.handleEditorCommitted(m)
+	case profile_editor.EditorCancelledMsg:
+		return p, nil
 	case tea.KeyMsg:
 		return p.handleKey(m)
 	}
-	return p.forwardToConfirms(msg)
+	return p.forwardNonKey(msg)
 }
 
 func (p ProfilesPage) handleResize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
@@ -237,73 +157,77 @@ func (p ProfilesPage) handleLoaded(msg loadedMsg) (tea.Model, tea.Cmd) {
 }
 
 func (p ProfilesPage) handlePickerScan(msg tea.Msg) (tea.Model, tea.Cmd) {
-	if p.pickerActive {
+	if p.picker.active {
 		return p.updatePicker(msg)
 	}
 	return p, nil
 }
 
 func (p ProfilesPage) handleUseInNewProfile(msg UseInNewProfileMsg) (tea.Model, tea.Cmd) {
-	// Open a new draft pre-filled with the selected model path.
-	p.draft = &profileDraft{
-		ID:         "",
-		Name:       "New Profile",
-		Model:      msg.Path,
-		NGL:        "99",
-		CtxSize:    "8192",
-		BatchSize:  "2048",
-		UBatchSize: "512",
-		Port:       "4321",
-		FlashAttn:  "auto",
-		CacheTypeK: "q8_0",
-		CacheTypeV: "q8_0",
-		isNew:      true,
-	}
-	p.editorOpenSnapshot = *p.draft
-	p.form = buildEditorForm(p.draft, p.schema)
-	p.editing = true
-	p.subTab = subTabEssentials
-	p.advancedFilter = ""
-	p.filterMode = false
-	p.advanced.SetRows(p.advancedAll)
+	d := newDraftDefaults()
+	d.Model = msg.Path
+	var openCmd tea.Cmd
+	p.editor, openCmd = p.editor.Open(d)
 	p, fc := p.withFlash("new profile prefilled with picked model")
-	return p, tea.Batch(p.form.Init(), fc)
+	return p, tea.Batch(openCmd, fc)
 }
 
 func (p ProfilesPage) handleModelPicked(msg components.ModelPickedMsg) (tea.Model, tea.Cmd) {
-	if p.draft != nil {
-		p.draft.Model = msg.Path
-	}
-	p.pickerActive = false
-	if c := p.picker.Cancel(); c != nil {
+	p.picker.active = false
+	if c := p.picker.picker.Cancel(); c != nil {
 		c()
 	}
-	// Rebuild form so the new Model value is shown if user is on
-	// essentials sub-tab.
-	p.form = buildEditorForm(p.draft, p.schema)
-	return p, p.form.Init()
+	var cmd tea.Cmd
+	p.editor, cmd = p.editor.SetModelPath(msg.Path)
+	return p, cmd
 }
 
 func (p ProfilesPage) handleModelPickerCancelled(_ components.ModelPickerCancelledMsg) (tea.Model, tea.Cmd) {
-	p.pickerActive = false
+	p.picker.active = false
 	return p, nil
 }
 
-func (p ProfilesPage) handleDiscardConfirmed(_ profileDiscardConfirmedMsg) (tea.Model, tea.Cmd) {
-	p.editing = false
-	p.form = nil
-	p.draft = nil
-	return p, nil
-}
-
-// handleKey routes key input to the active sub-mode.
-// Priority: discard confirm > editor form > delete confirm > list nav.
-func (p ProfilesPage) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if p.discardConfirm.Active() {
-		return p.updateConfirmDiscard(msg)
+// handleEditorCommitted persists the saved Draft via the store, refreshes
+// the list, and surfaces success/failure as a flash.
+func (p ProfilesPage) handleEditorCommitted(msg profile_editor.EditorCommittedMsg) (tea.Model, tea.Cmd) {
+	d := msg.Draft
+	if d.ID == "" {
+		d.ID = domain.Slugify(d.Name)
 	}
-	if p.editing {
-		return p.updateForm(msg)
+	pr := d.ToProfile()
+
+	// Preserve existing meta when editing.
+	if !d.IsNew {
+		if existing, err := p.store.Get(d.ID); err == nil {
+			pr.Meta = existing.Meta
+		}
+	}
+
+	var fc tea.Cmd
+	if err := p.store.Save(pr); err != nil {
+		p, fc = p.withFlash("save failed: " + err.Error())
+	} else {
+		p, fc = p.withFlash("saved " + pr.ID)
+	}
+	return p, tea.Batch(p.loadCmd(), fc)
+}
+
+// handleKey routes key input. Priority: editor (which owns its discard
+// confirm) > delete confirm > list nav. Picker is intercepted on ctrl+p
+// or while open before forwarding to the editor.
+func (p ProfilesPage) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if p.picker.active {
+		return p.updatePicker(msg)
+	}
+	if p.editor.Active() {
+		if msg.String() == "ctrl+p" && p.picker.scanner != nil {
+			p.picker.picker = components.NewModelPicker(p.picker.scanner, p.picker.scanPaths)
+			p.picker.active = true
+			return p, p.picker.picker.Init()
+		}
+		var cmd tea.Cmd
+		p.editor, cmd = p.editor.Update(msg)
+		return p, cmd
 	}
 	if p.deleteConfirm.Active() {
 		return p.updateConfirm(msg)
@@ -311,28 +235,14 @@ func (p ProfilesPage) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return p.updateList(msg)
 }
 
-// forwardToConfirms forwards non-key messages to active huh surfaces so
-// their internal Cmd→Msg loops (focus init, async validation, button
-// styling refresh) actually fire. Without this the form never completes
-// its Init() handshake.
-//
-// Priority must match handleKey: discard confirm > editor form > delete
-// confirm. If discard is open p.editing is still true, so we check
-// discard first to avoid stealing its Init handshake.
-func (p ProfilesPage) forwardToConfirms(msg tea.Msg) (tea.Model, tea.Cmd) {
-	if p.discardConfirm.Active() {
+// forwardNonKey routes non-key messages to the highest-priority active
+// surface so its internal Cmd→Msg loops complete (huh focus init, async
+// validation). Editor first (its discard confirm and form both need
+// non-key forwarding), then delete confirm.
+func (p ProfilesPage) forwardNonKey(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if p.editor.Active() {
 		var cmd tea.Cmd
-		p.discardConfirm, cmd = p.discardConfirm.Update(msg)
-		return p, cmd
-	}
-	if p.editing && p.form != nil {
-		updated, cmd := p.form.Update(msg)
-		if f, ok := updated.(*huh.Form); ok {
-			p.form = f
-		}
-		if p.form != nil && p.form.State == huh.StateCompleted {
-			return p.commitDraft()
-		}
+		p.editor, cmd = p.editor.Update(msg)
 		return p, cmd
 	}
 	if p.deleteConfirm.Active() {
@@ -348,57 +258,12 @@ func (p ProfilesPage) forwardToConfirms(msg tea.Msg) (tea.Model, tea.Cmd) {
 // store mutation, flash, and reload all happen on the UI thread.
 type profileDeleteConfirmedMsg struct{ id string }
 
-// profileDiscardConfirmedMsg is emitted by discardConfirm.onYes when the user
-// confirms abandoning unsaved changes; the page clears editor state.
-type profileDiscardConfirmedMsg struct{}
-
-// askConfirmDiscard arms the "discard unsaved changes?" overlay.
-func (p ProfilesPage) askConfirmDiscard() (tea.Model, tea.Cmd) {
-	p.discardConfirm = components.NewConfirm("Discard unsaved changes?", nil, func(_ any) tea.Cmd {
-		return func() tea.Msg { return profileDiscardConfirmedMsg{} }
-	})
-	return p, p.discardConfirm.Init()
-}
-
-func (p ProfilesPage) updateConfirmDiscard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if msg.String() == "esc" {
-		p.discardConfirm = components.Confirm{}
-		return p, nil
-	}
-	var cmd tea.Cmd
-	p.discardConfirm, cmd = p.discardConfirm.Update(msg)
-	return p, cmd
-}
-
 func (p ProfilesPage) View() string {
-	if p.discardConfirm.Active() {
-		return p.discardConfirm.View()
+	if p.editor.Active() {
+		return p.editor.View()
 	}
-	if p.pickerActive {
-		return p.picker.View()
-	}
-	if p.editing && p.form != nil {
-		header := theme.Title.Render(fmt.Sprintf("Editor — [%s]   ctrl+t to switch  ctrl+p to pick model", p.subTab))
-		var body string
-		if p.subTab == subTabEssentials {
-			body = p.form.View()
-		} else {
-			body = p.advanced.View()
-		}
-		report := p.validator.Validate(p.previewProfile(), p.schema)
-		var lines []string
-		for _, e := range report.Errors {
-			lines = append(lines, theme.Error.Render("✗ "+e.Field+": "+e.Message))
-		}
-		for _, w := range report.Warnings {
-			lines = append(lines, theme.Warn.Render("! "+w.Field+": "+w.Message))
-		}
-		filterLine := ""
-		if p.subTab == subTabAdvanced {
-			filterLine = theme.Subtitle.Render(fmt.Sprintf("filter: %q", p.advancedFilter))
-		}
-		footer := strings.Join(lines, "\n")
-		return lipgloss.JoinVertical(lipgloss.Left, header, body, filterLine, footer)
+	if p.picker.active {
+		return p.picker.picker.View()
 	}
 	if p.deleteConfirm.Active() {
 		return p.deleteConfirm.View()
@@ -441,13 +306,11 @@ func (p ProfilesPage) detailView() string {
 // the status bar. Varies by editor / picker / confirm / list mode.
 func (p ProfilesPage) Hints() string {
 	switch {
-	case p.discardConfirm.Active():
-		return "[←→] choose  [enter] confirm  [esc] cancel"
-	case p.pickerActive:
+	case p.picker.active:
 		return "[↑↓] move  [enter] pick  [esc] cancel"
 	case p.deleteConfirm.Active():
 		return "[←→] choose  [enter] confirm"
-	case p.editing:
+	case p.editor.Active():
 		return "[ctrl+t] sub-tab  [ctrl+p] pick model  [esc] cancel"
 	default:
 		return "[enter] edit  [n] new  [d] dup  [x] del  [L] launch  [/] filter"
@@ -489,10 +352,10 @@ func (p ProfilesPage) launchSelected() (tea.Model, tea.Cmd) {
 }
 
 // IsCapturingInput tells the root model when the page owns Tab/Shift+Tab.
-// True whenever an editor, picker overlay, or any confirm dialog is on
-// screen — these states need Tab/arrows/enter to navigate huh forms.
+// True whenever the editor (incl. its discard confirm), a picker, or the
+// delete confirm is on screen.
 func (p ProfilesPage) IsCapturingInput() bool {
-	return p.editing || p.pickerActive || p.deleteConfirm.Active() || p.discardConfirm.Active()
+	return p.editor.Active() || p.deleteConfirm.Active() || p.picker.active
 }
 
 // Reload triggers a fresh load from the underlying store. Called by the
@@ -511,102 +374,9 @@ func (p ProfilesPage) withFlash(msg string) (ProfilesPage, tea.Cmd) {
 }
 
 func (p ProfilesPage) updatePicker(msg tea.Msg) (tea.Model, tea.Cmd) {
-	picker, cmd := p.picker.Update(msg)
-	p.picker = picker
+	picker, cmd := p.picker.picker.Update(msg)
+	p.picker.picker = picker
 	return p, cmd
-}
-
-func (p ProfilesPage) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if p.pickerActive {
-		return p.updatePicker(msg)
-	}
-	if msg.String() == "ctrl+p" && p.scanner != nil {
-		p.picker = components.NewModelPicker(p.scanner, p.scanPaths)
-		p.pickerActive = true
-		return p, p.picker.Init()
-	}
-	if msg.String() == "esc" {
-		if p.draft != nil && *p.draft != p.editorOpenSnapshot {
-			return p.askConfirmDiscard()
-		}
-		p.editing = false
-		p.form = nil
-		return p, nil
-	}
-	if key.Matches(msg, p.listKeys.Tab) {
-		if p.subTab == subTabEssentials {
-			p.subTab = subTabAdvanced
-		} else {
-			p.subTab = subTabEssentials
-		}
-		return p, nil
-	}
-
-	if p.subTab == subTabAdvanced {
-		switch msg.String() {
-		case "/":
-			p.filterMode = !p.filterMode
-			return p, nil
-		case "backspace":
-			if p.filterMode && len(p.advancedFilter) > 0 {
-				p.advancedFilter = p.advancedFilter[:len(p.advancedFilter)-1]
-				p.advanced.SetRows(filterRows(p.advancedAll, p.advancedFilter))
-			}
-			return p, nil
-		}
-		if p.filterMode && len(msg.Runes) == 1 {
-			p.advancedFilter += string(msg.Runes)
-			p.advanced.SetRows(filterRows(p.advancedAll, p.advancedFilter))
-			return p, nil
-		}
-		t, cmd := p.advanced.Update(msg)
-		p.advanced = t
-		return p, cmd
-	}
-
-	updated, cmd := p.form.Update(msg)
-	if f, ok := updated.(*huh.Form); ok {
-		p.form = f
-	}
-
-	if p.form != nil && p.form.State == huh.StateCompleted {
-		return p.commitDraft()
-	}
-	return p, cmd
-}
-
-func (p ProfilesPage) commitDraft() (tea.Model, tea.Cmd) {
-	if p.draft == nil {
-		return p, nil
-	}
-	d := p.draft
-	if d.ID == "" {
-		d.ID = domain.Slugify(d.Name)
-	}
-	pr := d.toProfile()
-
-	// Preserve existing meta when editing.
-	if !d.isNew {
-		if existing, err := p.store.Get(d.ID); err == nil {
-			pr.Meta = existing.Meta
-		}
-	}
-
-	var fc tea.Cmd
-	if err := p.store.Save(pr); err != nil {
-		p, fc = p.withFlash("save failed: " + err.Error())
-	} else {
-		p, fc = p.withFlash("saved " + pr.ID)
-	}
-	p.editing = false
-	p.form = nil
-	return p, tea.Batch(p.loadCmd(), fc)
-}
-
-// previewProfile builds a Profile from the current draft (without saving)
-// for the validator.
-func (p ProfilesPage) previewProfile() domain.Profile {
-	return p.draft.toProfile()
 }
 
 func (p ProfilesPage) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -634,9 +404,10 @@ func (p ProfilesPage) performDelete(id string) (tea.Model, tea.Cmd) {
 	return p, tea.Batch(p.loadCmd(), fc)
 }
 
-func (p ProfilesPage) startNew() (tea.Model, tea.Cmd) {
-	p.draft = &profileDraft{
-		ID:         "",
+// newDraftDefaults builds a fresh Draft pre-seeded with sensible defaults
+// for new profiles. Shared by [n] (start new) and "use in new profile".
+func newDraftDefaults() profile_editor.Draft {
+	return profile_editor.Draft{
 		Name:       "New Profile",
 		NGL:        "99",
 		CtxSize:    "8192",
@@ -646,16 +417,14 @@ func (p ProfilesPage) startNew() (tea.Model, tea.Cmd) {
 		FlashAttn:  "auto",
 		CacheTypeK: "q8_0",
 		CacheTypeV: "q8_0",
-		isNew:      true,
+		IsNew:      true,
 	}
-	p.editorOpenSnapshot = *p.draft
-	p.form = buildEditorForm(p.draft, p.schema)
-	p.editing = true
-	p.subTab = subTabEssentials
-	p.advancedFilter = ""
-	p.filterMode = false
-	p.advanced.SetRows(p.advancedAll)
-	return p, p.form.Init()
+}
+
+func (p ProfilesPage) startNew() (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+	p.editor, cmd = p.editor.Open(newDraftDefaults())
+	return p, cmd
 }
 
 func (p ProfilesPage) startEditSelected() (tea.Model, tea.Cmd) {
@@ -668,28 +437,23 @@ func (p ProfilesPage) startEditSelected() (tea.Model, tea.Cmd) {
 		return p, nil
 	}
 	pr := sel.p
-	p.draft = &profileDraft{
+	d := profile_editor.Draft{
 		ID:          pr.ID,
 		Name:        pr.Name,
 		Description: pr.Description,
 		Model:       pr.Model,
-		NGL:         argString(pr.Args["ngl"]),
-		CtxSize:     argString(pr.Args["ctx-size"]),
-		BatchSize:   argString(pr.Args["batch-size"]),
-		UBatchSize:  argString(pr.Args["ubatch-size"]),
-		Port:        argString(pr.Args["port"]),
-		FlashAttn:   flashAttnToString(pr.Args["flash-attn"]),
-		CacheTypeK:  argString(pr.Args["cache-type-k"]),
-		CacheTypeV:  argString(pr.Args["cache-type-v"]),
+		NGL:         profile_editor.ArgString(pr.Args["ngl"]),
+		CtxSize:     profile_editor.ArgString(pr.Args["ctx-size"]),
+		BatchSize:   profile_editor.ArgString(pr.Args["batch-size"]),
+		UBatchSize:  profile_editor.ArgString(pr.Args["ubatch-size"]),
+		Port:        profile_editor.ArgString(pr.Args["port"]),
+		FlashAttn:   profile_editor.FlashAttnToString(pr.Args["flash-attn"]),
+		CacheTypeK:  profile_editor.ArgString(pr.Args["cache-type-k"]),
+		CacheTypeV:  profile_editor.ArgString(pr.Args["cache-type-v"]),
 	}
-	p.editorOpenSnapshot = *p.draft
-	p.form = buildEditorForm(p.draft, p.schema)
-	p.editing = true
-	p.subTab = subTabEssentials
-	p.advancedFilter = ""
-	p.filterMode = false
-	p.advanced.SetRows(p.advancedAll)
-	return p, p.form.Init()
+	var cmd tea.Cmd
+	p.editor, cmd = p.editor.Open(d)
+	return p, cmd
 }
 
 func (p ProfilesPage) duplicateSelected() (tea.Model, tea.Cmd) {
