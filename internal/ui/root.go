@@ -143,118 +143,146 @@ func (m RootModel) Init() tea.Cmd {
 
 func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.bootBlocker != nil {
-		if k, ok := msg.(tea.KeyMsg); ok {
-			if k.Type == tea.KeyCtrlC || (k.Type == tea.KeyRunes && len(k.Runes) == 1 && k.Runes[0] == 'q') {
-				return m, tea.Quit
-			}
-		}
-		if w, ok := msg.(tea.WindowSizeMsg); ok {
-			m.width, m.height = w.Width, w.Height
-		}
-		return m, nil
+		return m.handleBootBlocker(msg)
 	}
 	switch msg := msg.(type) {
 	case pages.LauncherProfilesLoadedMsg:
-		updated, cmd := m.pages[TabLauncher].Update(msg)
-		m.pages[TabLauncher] = updated
-		return m, cmd
-
+		return m.forwardTo(TabLauncher, msg)
 	case pages.UseInNewProfileMsg:
-		// Switch to Profiles tab and forward the message so the page
-		// opens a pre-filled new draft.
-		m.active = TabProfiles
-		updated, cmd := m.pages[TabProfiles].Update(msg)
-		m.pages[TabProfiles] = updated
-		return m, cmd
-
+		return m.activateAndForward(TabProfiles, msg)
 	case pages.SwitchToMonitorMsg:
-		m.active = TabMonitor
-		// Forward the PID so MonitorPage can refresh + select that row.
-		updated, cmd := m.pages[TabMonitor].Update(pages.MonitorSelectPIDMsg{PID: msg.PID})
-		m.pages[TabMonitor] = updated
-		return m, cmd
-
+		return m.handleSwitchToMonitor(msg)
 	case pages.LaunchProfileMsg:
-		m.active = TabLauncher
-		updated, cmd := m.pages[TabLauncher].Update(msg)
-		m.pages[TabLauncher] = updated
-		return m, cmd
-
+		return m.activateAndForward(TabLauncher, msg)
 	case tea.WindowSizeMsg:
-		m.width, m.height = msg.Width, msg.Height
-		// forward sized message to all pages so their internal state knows
-		var cmds []tea.Cmd
-		for i, p := range m.pages {
-			updated, cmd := p.Update(tea.WindowSizeMsg{
-				Width:  msg.Width,
-				Height: msg.Height - 2, // header + status
-			})
-			m.pages[i] = updated
-			if cmd != nil {
-				cmds = append(cmds, cmd)
-			}
-		}
-		return m, tea.Batch(cmds...)
-
+		return m.handleResize(msg)
 	case tea.KeyMsg:
-		// Help toggle is global and pre-empts page routing.
-		if m.helpOpen {
-			switch msg.String() {
-			case "?", "esc":
-				m.helpOpen = false
-				return m, nil
-			case "ctrl+c":
-				return m, tea.Quit
-			}
-			return m, nil // swallow everything else while help is open
-		}
-		// ctrl+c is the only unconditional global key — it must work
-		// even while an editor/huh form is active so the user can
-		// always escape. Every other shortcut (q, 1-4, tab, ?) is
-		// gated by IsCapturingInput so printable keys reach the form
-		// instead of triggering quit/tab-switch/help.
-		if msg.String() == "ctrl+c" {
+		return m.handleKey(msg)
+	case tea.MouseMsg:
+		return m.forwardToActivePage(msg)
+	}
+	return m.broadcast(msg)
+}
+
+// handleBootBlocker swallows every message while the boot-blocker modal is
+// up. Only `q` and `ctrl+c` quit; window resizes are tracked so the modal
+// re-renders at the new size.
+func (m RootModel) handleBootBlocker(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if k, ok := msg.(tea.KeyMsg); ok {
+		if k.Type == tea.KeyCtrlC || (k.Type == tea.KeyRunes && len(k.Runes) == 1 && k.Runes[0] == 'q') {
 			return m, tea.Quit
 		}
-		if !m.activePageCapturesInput() {
-			if msg.String() == "?" {
-				m.helpOpen = true
-				return m, nil
-			}
-			switch msg.String() {
-			case "q":
-				return m, tea.Quit
-			case "1":
-				return m.activate(TabProfiles)
-			case "2":
-				return m.activate(TabLauncher)
-			case "3":
-				return m.activate(TabMonitor)
-			case "4":
-				return m.activate(TabModels)
-			case "tab":
-				return m.activate((m.active + 1) % 4)
-			case "shift+tab":
-				return m.activate((m.active + 3) % 4)
-			}
+	}
+	if w, ok := msg.(tea.WindowSizeMsg); ok {
+		m.width, m.height = w.Width, w.Height
+	}
+	return m, nil
+}
+
+// handleResize forwards a sized window message (minus header + status row)
+// to every page so each tab can re-layout, even ones not currently active.
+func (m RootModel) handleResize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
+	m.width, m.height = msg.Width, msg.Height
+	var cmds []tea.Cmd
+	for i, p := range m.pages {
+		updated, cmd := p.Update(tea.WindowSizeMsg{
+			Width:  msg.Width,
+			Height: msg.Height - 2,
+		})
+		m.pages[i] = updated
+		if cmd != nil {
+			cmds = append(cmds, cmd)
 		}
 	}
+	return m, tea.Batch(cmds...)
+}
 
-	// Key/Mouse input goes only to the active page.
-	if _, isKey := msg.(tea.KeyMsg); isKey {
-		updated, cmd := m.pages[m.active].Update(msg)
-		m.pages[m.active] = updated
-		return m, cmd
+// handleSwitchToMonitor activates the Monitor tab and translates the cross-
+// tab message into a MonitorSelectPIDMsg so the page refreshes + selects
+// the requested row.
+func (m RootModel) handleSwitchToMonitor(msg pages.SwitchToMonitorMsg) (tea.Model, tea.Cmd) {
+	m.active = TabMonitor
+	updated, cmd := m.pages[TabMonitor].Update(pages.MonitorSelectPIDMsg{PID: msg.PID})
+	m.pages[TabMonitor] = updated
+	return m, cmd
+}
+
+// handleKey dispatches a key event. ctrl+c is the only unconditional global
+// shortcut — every other binding (?, q, 1-4, tab, shift+tab) is gated by
+// IsCapturingInput so printable keys reach an active editor/picker
+// instead of triggering quit/tab-switch/help.
+func (m RootModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.helpOpen {
+		return m.handleHelpKey(msg)
 	}
-	if _, isMouse := msg.(tea.MouseMsg); isMouse {
-		updated, cmd := m.pages[m.active].Update(msg)
-		m.pages[m.active] = updated
-		return m, cmd
+	if msg.String() == "ctrl+c" {
+		return m, tea.Quit
 	}
-	// Other msgs (cmd→msg returns from background pipelines like the
-	// model scanner or the monitor periodic tick) are broadcast to every
-	// page, so msgs reach the page that owns them even when it isn't
-	// active. Pages that don't recognize the type simply return p, nil.
+	if !m.activePageCapturesInput() {
+		if msg.String() == "?" {
+			m.helpOpen = true
+			return m, nil
+		}
+		switch msg.String() {
+		case "q":
+			return m, tea.Quit
+		case "1":
+			return m.activate(TabProfiles)
+		case "2":
+			return m.activate(TabLauncher)
+		case "3":
+			return m.activate(TabMonitor)
+		case "4":
+			return m.activate(TabModels)
+		case "tab":
+			return m.activate((m.active + 1) % 4)
+		case "shift+tab":
+			return m.activate((m.active + 3) % 4)
+		}
+	}
+	return m.forwardToActivePage(msg)
+}
+
+// handleHelpKey runs while the help modal is on screen: `?` and `esc` close
+// it, `ctrl+c` still quits, every other key is swallowed.
+func (m RootModel) handleHelpKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "?", "esc":
+		m.helpOpen = false
+		return m, nil
+	case "ctrl+c":
+		return m, tea.Quit
+	}
+	return m, nil
+}
+
+// activateAndForward switches to t before forwarding the message — used by
+// cross-tab navigations that need both the tab change and the page update.
+func (m RootModel) activateAndForward(t Tab, msg tea.Msg) (tea.Model, tea.Cmd) {
+	m.active = t
+	updated, cmd := m.pages[t].Update(msg)
+	m.pages[t] = updated
+	return m, cmd
+}
+
+// forwardTo delivers the message to a specific tab without changing focus.
+func (m RootModel) forwardTo(t Tab, msg tea.Msg) (tea.Model, tea.Cmd) {
+	updated, cmd := m.pages[t].Update(msg)
+	m.pages[t] = updated
+	return m, cmd
+}
+
+// forwardToActivePage delivers the message to the currently active tab.
+func (m RootModel) forwardToActivePage(msg tea.Msg) (tea.Model, tea.Cmd) {
+	updated, cmd := m.pages[m.active].Update(msg)
+	m.pages[m.active] = updated
+	return m, cmd
+}
+
+// broadcast delivers cmd→msg returns from background pipelines (model
+// scanner, monitor ticks) to every page so the owning page receives them
+// even when it isn't active.
+func (m RootModel) broadcast(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 	for i, p := range m.pages {
 		updated, cmd := p.Update(msg)
