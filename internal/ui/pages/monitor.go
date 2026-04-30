@@ -182,87 +182,126 @@ type restartResultMsg struct {
 	err error
 }
 
+// Update is a thin dispatcher: each typed-message arm delegates to a
+// private handle<MsgType> method. Most handlers run the shared tail
+// (forwardToConfirms) themselves so non-key messages still reach active
+// huh forms (Init handshake, async validation) and so the table sees
+// every key for navigation.
 func (p *MonitorPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	var cmds []tea.Cmd
 	switch m := msg.(type) {
-
-	// ---- Phase 1: Layout ----
 	case tea.WindowSizeMsg:
-		p.SetSize(m.Width, m.Height)
-
-	// ---- Phase 2: Key routing — confirm overlays first, then actions ----
+		return p.handleResize(m)
 	case tea.KeyMsg:
-		if p.killConfirm.Active() {
-			cmds = append(cmds, p.handleConfirmKillKey(m))
-			return p, tea.Batch(cmds...)
-		}
-		if p.restartConfirm.Active() {
-			cmds = append(cmds, p.handleConfirmRestartKey(m))
-			return p, tea.Batch(cmds...)
-		}
-		switch {
-		case m.Type == tea.KeyRunes && len(m.Runes) == 1 && m.Runes[0] == 'v':
-			p.subView = (p.subView + 1) % 3
-		case m.Type == tea.KeyRunes && len(m.Runes) == 1 && m.Runes[0] == 'k':
-			if pid := p.selectedPID(); pid > 0 {
-				cmds = append(cmds, p.askConfirmKill(pid))
-				// Return early so the original 'k' keypress does NOT
-				// reach p.tbl.Update below, where the table's default
-				// keymap would interpret it as line-up and move the
-				// selection away from the row the user is acting on.
-				return p, tea.Batch(cmds...)
-			}
-		case m.Type == tea.KeyRunes && len(m.Runes) == 1 && m.Runes[0] == 'r':
-			if pid := p.selectedPID(); pid > 0 {
-				cmds = append(cmds, p.askConfirmRestart(pid))
-				return p, tea.Batch(cmds...)
-			}
-		case m.Type == tea.KeySpace:
-			p.paused = !p.paused
-		}
-
-	// ---- Phase 3: Instance list refresh and deferred selection ----
+		return p.handleKey(m)
 	case monitorInstancesRefreshedMsg:
-		if c := p.applyInstances(m.insts); c != nil {
-			cmds = append(cmds, c)
-		}
-		if p.pendingSelectPID != 0 {
-			p.selectRow(p.pendingSelectPID)
-			p.pendingSelectPID = 0
-		}
+		return p.handleInstancesRefreshed(m)
 	case restartResultMsg:
-		if m.err != nil {
-			p.flash = fmt.Sprintf("restart: pid %d failed: %v", m.pid, m.err)
-		}
-		cmds = append(cmds, p.refreshInstancesCmd())
+		return p.handleRestartResult(m)
 	case MonitorSelectPIDMsg:
-		// Defer the cursor move until the next refresh has applied fresh rows,
-		// so we never select against a stale row list.
-		p.pendingSelectPID = m.PID
-		cmds = append(cmds, p.refreshInstancesCmd())
+		return p.handleSelectPID(m)
 	case monitorPeriodicTickMsg:
-		cmds = append(cmds, p.refreshInstancesCmd(), p.periodicTickCmd())
-
-	// ---- Post-confirm action messages emitted by Confirm.onYes ----
+		return p.handlePeriodicTick()
 	case monitorKillConfirmedMsg:
-		_ = p.pm.Kill(m.pid)
-		cmds = append(cmds, p.refreshInstancesCmd())
+		return p.handleKillConfirmed(m)
 	case monitorRestartConfirmedMsg:
-		cmds = append(cmds, restartCmd(p.pm, m.pid, m.profile, m.background))
-
-	// ---- Phase 4: Monitor event routing (logs, slots, GPU, health, metrics) ----
+		return p.handleRestartConfirmed(m)
 	case monitorEventMsg:
-		if st, ok := p.subs[m.ev.PID]; ok {
-			st.Apply(m.ev, p.paused)
-		}
-		// Re-arm listener for this PID.
-		if ch, ok := p.chans[m.ev.PID]; ok {
-			cmds = append(cmds, listenCmd(ch))
-		}
+		return p.handleMonitorEvent(m)
 	}
+	return p, p.forwardToConfirms(msg)
+}
 
-	// ---- Phase 5: Forward non-key messages to confirm forms ----
-	// Required so huh internal Cmds (focus init, button styling refresh) fire.
+func (p *MonitorPage) handleResize(m tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
+	p.SetSize(m.Width, m.Height)
+	return p, p.forwardToConfirms(m)
+}
+
+// handleKey routes key input. Confirm overlays consume the key and short-
+// circuit the table update so the form keeps focus. The 'k' / 'r' keys
+// also short-circuit so the table's default keymap doesn't interpret
+// them as line-up / refresh and move the selection off the acted-on row.
+func (p *MonitorPage) handleKey(m tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if p.killConfirm.Active() {
+		return p, p.handleConfirmKillKey(m)
+	}
+	if p.restartConfirm.Active() {
+		return p, p.handleConfirmRestartKey(m)
+	}
+	switch {
+	case m.Type == tea.KeyRunes && len(m.Runes) == 1 && m.Runes[0] == 'v':
+		p.subView = (p.subView + 1) % 3
+	case m.Type == tea.KeyRunes && len(m.Runes) == 1 && m.Runes[0] == 'k':
+		if pid := p.selectedPID(); pid > 0 {
+			return p, p.askConfirmKill(pid)
+		}
+	case m.Type == tea.KeyRunes && len(m.Runes) == 1 && m.Runes[0] == 'r':
+		if pid := p.selectedPID(); pid > 0 {
+			return p, p.askConfirmRestart(pid)
+		}
+	case m.Type == tea.KeySpace:
+		p.paused = !p.paused
+	}
+	return p, p.forwardToConfirms(m)
+}
+
+func (p *MonitorPage) handleInstancesRefreshed(m monitorInstancesRefreshedMsg) (tea.Model, tea.Cmd) {
+	var cmds []tea.Cmd
+	if c := p.applyInstances(m.insts); c != nil {
+		cmds = append(cmds, c)
+	}
+	if p.pendingSelectPID != 0 {
+		p.selectRow(p.pendingSelectPID)
+		p.pendingSelectPID = 0
+	}
+	cmds = append(cmds, p.forwardToConfirms(m))
+	return p, tea.Batch(cmds...)
+}
+
+func (p *MonitorPage) handleRestartResult(m restartResultMsg) (tea.Model, tea.Cmd) {
+	if m.err != nil {
+		p.flash = fmt.Sprintf("restart: pid %d failed: %v", m.pid, m.err)
+	}
+	return p, tea.Batch(p.refreshInstancesCmd(), p.forwardToConfirms(m))
+}
+
+func (p *MonitorPage) handleSelectPID(m MonitorSelectPIDMsg) (tea.Model, tea.Cmd) {
+	// Defer the cursor move until the next refresh has applied fresh rows,
+	// so we never select against a stale row list.
+	p.pendingSelectPID = m.PID
+	return p, tea.Batch(p.refreshInstancesCmd(), p.forwardToConfirms(m))
+}
+
+func (p *MonitorPage) handlePeriodicTick() (tea.Model, tea.Cmd) {
+	return p, tea.Batch(p.refreshInstancesCmd(), p.periodicTickCmd(), p.forwardToConfirms(monitorPeriodicTickMsg{}))
+}
+
+func (p *MonitorPage) handleKillConfirmed(m monitorKillConfirmedMsg) (tea.Model, tea.Cmd) {
+	_ = p.pm.Kill(m.pid)
+	return p, tea.Batch(p.refreshInstancesCmd(), p.forwardToConfirms(m))
+}
+
+func (p *MonitorPage) handleRestartConfirmed(m monitorRestartConfirmedMsg) (tea.Model, tea.Cmd) {
+	return p, tea.Batch(restartCmd(p.pm, m.pid, m.profile, m.background), p.forwardToConfirms(m))
+}
+
+func (p *MonitorPage) handleMonitorEvent(m monitorEventMsg) (tea.Model, tea.Cmd) {
+	if st, ok := p.subs[m.ev.PID]; ok {
+		st.Apply(m.ev, p.paused)
+	}
+	var cmds []tea.Cmd
+	// Re-arm listener for this PID.
+	if ch, ok := p.chans[m.ev.PID]; ok {
+		cmds = append(cmds, listenCmd(ch))
+	}
+	cmds = append(cmds, p.forwardToConfirms(m))
+	return p, tea.Batch(cmds...)
+}
+
+// forwardToConfirms forwards msg to active confirm forms (so huh's Init /
+// validation Cmds land) and to the underlying table (so navigation keys
+// reach it). Returned by every handler that does NOT short-circuit.
+func (p *MonitorPage) forwardToConfirms(msg tea.Msg) tea.Cmd {
+	var cmds []tea.Cmd
 	if p.killConfirm.Active() {
 		var cmd tea.Cmd
 		p.killConfirm, cmd = p.killConfirm.Update(msg)
@@ -277,13 +316,12 @@ func (p *MonitorPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, cmd)
 		}
 	}
-
 	t, tc := p.tbl.Update(msg)
 	p.tbl = t
 	if tc != nil {
 		cmds = append(cmds, tc)
 	}
-	return p, tea.Batch(cmds...)
+	return tea.Batch(cmds...)
 }
 
 // askConfirmKill builds and arms the kill-confirmation overlay. The Confirm's

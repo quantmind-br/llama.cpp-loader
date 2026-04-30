@@ -120,112 +120,141 @@ func defaultPickerKeys() pickerKeys {
 	}
 }
 
-// Update handles keyboard input and streaming scan events.
+// Update is a thin dispatcher: each typed-message arm delegates to a
+// private handle<MsgType> method.
 func (m ModelPicker) Update(msg tea.Msg) (ModelPicker, tea.Cmd) {
-	keys := defaultPickerKeys()
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.width, m.height = msg.Width, msg.Height
-		return m, nil
+		return m.handleResize(msg)
 	case PickerScanStartedMsg:
-		if msg.Err != nil {
-			m.scanning = false
-			m.err = msg.Err.Error()
-			return m, nil
-		}
-		m.cancel = msg.Cancel
-		return m, pickerWaitForEvent(msg.Ch)
+		return m.handleScanStarted(msg)
 	case PickerScanEventMsg:
-		switch msg.Evt.Type {
-		case domain.ScanEventFile:
-			if msg.Evt.File != nil {
-				m.files = append(m.files, *msg.Evt.File)
-				m.applyFilter()
-			}
-		case domain.ScanEventError:
-			if msg.Evt.Error != nil {
-				m.err = msg.Evt.Error.Error()
-			}
-		case domain.ScanEventDone:
-			m.scanning = false
-		}
-		return m, pickerWaitForEvent(msg.Ch)
+		return m.handleScanEvent(msg)
 	case PickerScanClosedMsg:
-		m.scanning = false
-		return m, nil
+		return m.handleScanClosed(msg)
 	case tea.KeyMsg:
-		if key.Matches(msg, keys.Esc) {
-			if m.cancel != nil {
-				m.cancel()
-			}
-			return m, func() tea.Msg { return ModelPickerCancelledMsg{} }
+		return m.handleKey(msg)
+	}
+	return m, nil
+}
+
+func (m ModelPicker) handleResize(msg tea.WindowSizeMsg) (ModelPicker, tea.Cmd) {
+	m.width, m.height = msg.Width, msg.Height
+	return m, nil
+}
+
+func (m ModelPicker) handleScanStarted(msg PickerScanStartedMsg) (ModelPicker, tea.Cmd) {
+	if msg.Err != nil {
+		m.scanning = false
+		m.err = msg.Err.Error()
+		return m, nil
+	}
+	m.cancel = msg.Cancel
+	return m, pickerWaitForEvent(msg.Ch)
+}
+
+func (m ModelPicker) handleScanEvent(msg PickerScanEventMsg) (ModelPicker, tea.Cmd) {
+	switch msg.Evt.Type {
+	case domain.ScanEventFile:
+		if msg.Evt.File != nil {
+			m.files = append(m.files, *msg.Evt.File)
+			m.applyFilter()
 		}
-		if key.Matches(msg, keys.Enter) {
-			if len(m.filtered) == 0 {
-				return m, nil
-			}
-			path := m.filtered[m.cursor].Path
-			if m.cancel != nil {
-				m.cancel()
-			}
-			return m, func() tea.Msg { return ModelPickedMsg{Path: path} }
+	case domain.ScanEventError:
+		if msg.Evt.Error != nil {
+			m.err = msg.Evt.Error.Error()
 		}
-		if key.Matches(msg, keys.Filter) {
-			m.filterMode = !m.filterMode
+	case domain.ScanEventDone:
+		m.scanning = false
+	}
+	return m, pickerWaitForEvent(msg.Ch)
+}
+
+func (m ModelPicker) handleScanClosed(_ PickerScanClosedMsg) (ModelPicker, tea.Cmd) {
+	m.scanning = false
+	return m, nil
+}
+
+// handleKey dispatches one key event. Esc / Enter terminate the picker;
+// '/' toggles filter mode; while filter mode is on printable runes append
+// to the filter; otherwise arrows / pgup-down / home-end / g / G move
+// the cursor.
+func (m ModelPicker) handleKey(msg tea.KeyMsg) (ModelPicker, tea.Cmd) {
+	keys := defaultPickerKeys()
+	if key.Matches(msg, keys.Esc) {
+		if m.cancel != nil {
+			m.cancel()
+		}
+		return m, func() tea.Msg { return ModelPickerCancelledMsg{} }
+	}
+	if key.Matches(msg, keys.Enter) {
+		if len(m.filtered) == 0 {
 			return m, nil
 		}
-		if m.filterMode {
-			if key.Matches(msg, keys.Backspace) {
-				if len(m.filter) > 0 {
-					m.filter = m.filter[:len(m.filter)-1]
-					m.applyFilter()
-				}
-				return m, nil
-			}
-			if len(msg.Runes) == 1 {
-				m.filter += string(msg.Runes)
-				m.applyFilter()
-				return m, nil
-			}
+		path := m.filtered[m.cursor].Path
+		if m.cancel != nil {
+			m.cancel()
 		}
-		if key.Matches(msg, keys.Up) {
-			if m.cursor > 0 {
-				m.cursor--
-			}
-			return m, nil
+		return m, func() tea.Msg { return ModelPickedMsg{Path: path} }
+	}
+	if key.Matches(msg, keys.Filter) {
+		m.filterMode = !m.filterMode
+		return m, nil
+	}
+	if m.filterMode {
+		return m.handleFilterKey(msg, keys)
+	}
+	return m.handleNavKey(msg, keys)
+}
+
+// handleFilterKey runs while filter mode is on: backspace pops a char,
+// printable runes append. Anything else is swallowed.
+func (m ModelPicker) handleFilterKey(msg tea.KeyMsg, keys pickerKeys) (ModelPicker, tea.Cmd) {
+	if key.Matches(msg, keys.Backspace) {
+		if len(m.filter) > 0 {
+			m.filter = m.filter[:len(m.filter)-1]
+			m.applyFilter()
 		}
-		if key.Matches(msg, keys.Down) {
-			if m.cursor < len(m.filtered)-1 {
-				m.cursor++
-			}
-			return m, nil
+		return m, nil
+	}
+	if len(msg.Runes) == 1 {
+		m.filter += string(msg.Runes)
+		m.applyFilter()
+		return m, nil
+	}
+	return m.handleNavKey(msg, keys)
+}
+
+// handleNavKey runs cursor navigation: up/down, pgup/pgdn, home/end,
+// and (only outside filter mode) g / G.
+func (m ModelPicker) handleNavKey(msg tea.KeyMsg, keys pickerKeys) (ModelPicker, tea.Cmd) {
+	switch {
+	case key.Matches(msg, keys.Up):
+		if m.cursor > 0 {
+			m.cursor--
 		}
-		if key.Matches(msg, keys.PgUp) {
-			m.cursor -= 10
-			if m.cursor < 0 {
-				m.cursor = 0
-			}
-			return m, nil
+	case key.Matches(msg, keys.Down):
+		if m.cursor < len(m.filtered)-1 {
+			m.cursor++
 		}
-		if key.Matches(msg, keys.PgDn) {
-			m.cursor += 10
-			if m.cursor > len(m.filtered)-1 {
-				m.cursor = len(m.filtered) - 1
-			}
-			if m.cursor < 0 {
-				m.cursor = 0
-			}
-			return m, nil
-		}
-		if key.Matches(msg, keys.Home) || (!m.filterMode && key.Matches(msg, keys.GTop)) {
+	case key.Matches(msg, keys.PgUp):
+		m.cursor -= 10
+		if m.cursor < 0 {
 			m.cursor = 0
-			return m, nil
 		}
-		if key.Matches(msg, keys.End) || (!m.filterMode && key.Matches(msg, keys.GBottom)) {
-			if len(m.filtered) > 0 {
-				m.cursor = len(m.filtered) - 1
-			}
-			return m, nil
+	case key.Matches(msg, keys.PgDn):
+		m.cursor += 10
+		if m.cursor > len(m.filtered)-1 {
+			m.cursor = len(m.filtered) - 1
+		}
+		if m.cursor < 0 {
+			m.cursor = 0
+		}
+	case key.Matches(msg, keys.Home) || (!m.filterMode && key.Matches(msg, keys.GTop)):
+		m.cursor = 0
+	case key.Matches(msg, keys.End) || (!m.filterMode && key.Matches(msg, keys.GBottom)):
+		if len(m.filtered) > 0 {
+			m.cursor = len(m.filtered) - 1
 		}
 	}
 	return m, nil

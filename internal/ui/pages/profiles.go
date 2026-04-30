@@ -176,120 +176,150 @@ func (p ProfilesPage) loadCmd() tea.Cmd {
 	}
 }
 
+// Update is a thin dispatcher: each typed-message arm delegates to a
+// private handle<MsgType> method. Non-key messages fall through to
+// forwardToConfirms so active huh forms can complete their internal
+// Cmd→Msg handshakes.
 func (p ProfilesPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-
-	// ---- Phase 1: Layout and lifecycle messages ----
+	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
-		p.width, p.height = msg.Width, msg.Height
-		p.list.SetSize(msg.Width/3, msg.Height-2)
-		return p, nil
-
+		return p.handleResize(m)
 	case flashClearMsg:
-		if msg.tag == "profiles" && msg.at.Equal(p.flashAt) {
-			p.flash = ""
-			p.flashAt = time.Time{}
-		}
-		return p, nil
-
+		return p.handleFlashClear(m)
 	case loadedMsg:
-		if msg.err != nil {
-			p, fc := p.withFlash("load error: " + msg.err.Error())
-			return p, fc
-		}
-		items := make([]list.Item, 0, len(msg.profiles)+len(msg.diags))
-		for _, pr := range msg.profiles {
-			items = append(items, item{p: pr})
-		}
-		for _, d := range msg.diags {
-			items = append(items, corruptItem{id: d.ID, err: d.Err})
-		}
-		p.list.SetItems(items)
-		return p, nil
-
-	// ---- Phase 2: Model picker overlay messages ----
+		return p.handleLoaded(m)
 	case components.PickerScanStartedMsg, components.PickerScanEventMsg, components.PickerScanClosedMsg:
-		if p.pickerActive {
-			return p.updatePicker(msg)
-		}
-		return p, nil
-
+		return p.handlePickerScan(msg)
 	case UseInNewProfileMsg:
-		// Open a new draft pre-filled with the selected model path.
-		p.draft = &profileDraft{
-			ID:         "",
-			Name:       "New Profile",
-			Model:      msg.Path,
-			NGL:        "99",
-			CtxSize:    "8192",
-			BatchSize:  "2048",
-			UBatchSize: "512",
-			Port:       "4321",
-			FlashAttn:  "auto",
-			CacheTypeK: "q8_0",
-			CacheTypeV: "q8_0",
-			isNew:      true,
-		}
-		p.editorOpenSnapshot = *p.draft
-		p.form = buildEditorForm(p.draft, p.schema)
-		p.editing = true
-		p.subTab = subTabEssentials
-		p.advancedFilter = ""
-		p.filterMode = false
-		p.advanced.SetRows(p.advancedAll)
-		p, fc := p.withFlash("new profile prefilled with picked model")
-		return p, tea.Batch(p.form.Init(), fc)
-
-	// ---- Phase 3: Model picker result messages ----
+		return p.handleUseInNewProfile(m)
 	case components.ModelPickedMsg:
-		if p.draft != nil {
-			p.draft.Model = msg.Path
-		}
-		p.pickerActive = false
-		if c := p.picker.Cancel(); c != nil {
-			c()
-		}
-		// Rebuild form so the new Model value is shown if user is on
-		// essentials sub-tab.
-		p.form = buildEditorForm(p.draft, p.schema)
-		return p, p.form.Init()
-
+		return p.handleModelPicked(m)
 	case components.ModelPickerCancelledMsg:
-		p.pickerActive = false
-		return p, nil
-
-	// ---- Phase 4: Post-confirm actions emitted by Confirm.onYes ----
+		return p.handleModelPickerCancelled(m)
 	case profileDeleteConfirmedMsg:
-		return p.performDelete(msg.id)
+		return p.performDelete(m.id)
 	case profileDiscardConfirmedMsg:
-		p.editing = false
-		p.form = nil
-		p.draft = nil
-		return p, nil
-
-	// ---- Phase 5: Key routing — dispatch to the active sub-mode ----
-	// Priority: discard confirm > editor form > delete confirm > list nav.
+		return p.handleDiscardConfirmed(m)
 	case tea.KeyMsg:
-		if p.discardConfirm.Active() {
-			return p.updateConfirmDiscard(msg)
-		}
-		if p.editing {
-			return p.updateForm(msg)
-		}
-		if p.deleteConfirm.Active() {
-			return p.updateConfirm(msg)
-		}
-		return p.updateList(msg)
+		return p.handleKey(m)
 	}
+	return p.forwardToConfirms(msg)
+}
 
-	// ---- Phase 6: Forward non-key messages to active huh surfaces ----
-	// This is required so internal Cmd→Msg loops (focus init, async
-	// validation, button styling refresh) actually fire. Without this
-	// the form never completes its Init() handshake.
-	//
-	// Priority must match key routing: discard confirm > editor form >
-	// delete confirm. If discard is open p.editing is still true, so we
-	// check discard first to avoid stealing its Init handshake.
+func (p ProfilesPage) handleResize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
+	p.width, p.height = msg.Width, msg.Height
+	p.list.SetSize(msg.Width/3, msg.Height-2)
+	return p, nil
+}
+
+func (p ProfilesPage) handleFlashClear(msg flashClearMsg) (tea.Model, tea.Cmd) {
+	if msg.tag == "profiles" && msg.at.Equal(p.flashAt) {
+		p.flash = ""
+		p.flashAt = time.Time{}
+	}
+	return p, nil
+}
+
+func (p ProfilesPage) handleLoaded(msg loadedMsg) (tea.Model, tea.Cmd) {
+	if msg.err != nil {
+		p, fc := p.withFlash("load error: " + msg.err.Error())
+		return p, fc
+	}
+	items := make([]list.Item, 0, len(msg.profiles)+len(msg.diags))
+	for _, pr := range msg.profiles {
+		items = append(items, item{p: pr})
+	}
+	for _, d := range msg.diags {
+		items = append(items, corruptItem{id: d.ID, err: d.Err})
+	}
+	p.list.SetItems(items)
+	return p, nil
+}
+
+func (p ProfilesPage) handlePickerScan(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if p.pickerActive {
+		return p.updatePicker(msg)
+	}
+	return p, nil
+}
+
+func (p ProfilesPage) handleUseInNewProfile(msg UseInNewProfileMsg) (tea.Model, tea.Cmd) {
+	// Open a new draft pre-filled with the selected model path.
+	p.draft = &profileDraft{
+		ID:         "",
+		Name:       "New Profile",
+		Model:      msg.Path,
+		NGL:        "99",
+		CtxSize:    "8192",
+		BatchSize:  "2048",
+		UBatchSize: "512",
+		Port:       "4321",
+		FlashAttn:  "auto",
+		CacheTypeK: "q8_0",
+		CacheTypeV: "q8_0",
+		isNew:      true,
+	}
+	p.editorOpenSnapshot = *p.draft
+	p.form = buildEditorForm(p.draft, p.schema)
+	p.editing = true
+	p.subTab = subTabEssentials
+	p.advancedFilter = ""
+	p.filterMode = false
+	p.advanced.SetRows(p.advancedAll)
+	p, fc := p.withFlash("new profile prefilled with picked model")
+	return p, tea.Batch(p.form.Init(), fc)
+}
+
+func (p ProfilesPage) handleModelPicked(msg components.ModelPickedMsg) (tea.Model, tea.Cmd) {
+	if p.draft != nil {
+		p.draft.Model = msg.Path
+	}
+	p.pickerActive = false
+	if c := p.picker.Cancel(); c != nil {
+		c()
+	}
+	// Rebuild form so the new Model value is shown if user is on
+	// essentials sub-tab.
+	p.form = buildEditorForm(p.draft, p.schema)
+	return p, p.form.Init()
+}
+
+func (p ProfilesPage) handleModelPickerCancelled(_ components.ModelPickerCancelledMsg) (tea.Model, tea.Cmd) {
+	p.pickerActive = false
+	return p, nil
+}
+
+func (p ProfilesPage) handleDiscardConfirmed(_ profileDiscardConfirmedMsg) (tea.Model, tea.Cmd) {
+	p.editing = false
+	p.form = nil
+	p.draft = nil
+	return p, nil
+}
+
+// handleKey routes key input to the active sub-mode.
+// Priority: discard confirm > editor form > delete confirm > list nav.
+func (p ProfilesPage) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if p.discardConfirm.Active() {
+		return p.updateConfirmDiscard(msg)
+	}
+	if p.editing {
+		return p.updateForm(msg)
+	}
+	if p.deleteConfirm.Active() {
+		return p.updateConfirm(msg)
+	}
+	return p.updateList(msg)
+}
+
+// forwardToConfirms forwards non-key messages to active huh surfaces so
+// their internal Cmd→Msg loops (focus init, async validation, button
+// styling refresh) actually fire. Without this the form never completes
+// its Init() handshake.
+//
+// Priority must match handleKey: discard confirm > editor form > delete
+// confirm. If discard is open p.editing is still true, so we check
+// discard first to avoid stealing its Init handshake.
+func (p ProfilesPage) forwardToConfirms(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if p.discardConfirm.Active() {
 		var cmd tea.Cmd
 		p.discardConfirm, cmd = p.discardConfirm.Update(msg)
@@ -310,7 +340,6 @@ func (p ProfilesPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		p.deleteConfirm, cmd = p.deleteConfirm.Update(msg)
 		return p, cmd
 	}
-
 	return p, nil
 }
 

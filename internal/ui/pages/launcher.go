@@ -138,141 +138,174 @@ func loadProfilesCmd(store profilestore.Store) tea.Cmd {
 	}
 }
 
+// Update is a thin dispatcher: each typed-message arm delegates to a
+// private handle<MsgType> method. Non-key messages fall through to
+// forwardToConfirms so the active confirm form (or the underlying list)
+// can complete its internal Cmd→Msg handshake.
 func (p LauncherPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-
-	// ---- Phase 1: Layout ----
+	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
-		p.width, p.height = msg.Width, msg.Height
-		p.plist.SetSize(msg.Width/2, msg.Height-6)
-		return p, nil
-
-	// ---- Phase 2: Data loading ----
+		return p.handleResize(m)
 	case LauncherProfilesLoadedMsg:
-		if msg.Err != nil {
-			p.loadErr = msg.Err
-			return p, nil
+		return p.handleProfilesLoaded(m)
+	case launchedMsg:
+		return p.handleLaunched(m)
+	case healthyMsg:
+		return p.handleHealthy(m)
+	case launchErrMsg:
+		return p.handleLaunchErr(m)
+	case spinner.TickMsg:
+		return p.handleSpinnerTick(m)
+	case flashClearMsg:
+		return p.handleFlashClear(m)
+	case LaunchProfileMsg:
+		return p.handleLaunchProfile(m)
+	case launcherKillConfirmedMsg:
+		return p.handleKillConfirmed(m)
+	case tea.KeyMsg:
+		return p.handleKey(m)
+	}
+	return p.forwardToConfirms(msg)
+}
+
+func (p LauncherPage) handleResize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
+	p.width, p.height = msg.Width, msg.Height
+	p.plist.SetSize(msg.Width/2, msg.Height-6)
+	return p, nil
+}
+
+func (p LauncherPage) handleProfilesLoaded(msg LauncherProfilesLoadedMsg) (tea.Model, tea.Cmd) {
+	if msg.Err != nil {
+		p.loadErr = msg.Err
+		return p, nil
+	}
+	p.profiles = msg.Profiles
+	items := make([]list.Item, len(msg.Profiles))
+	for i, pr := range msg.Profiles {
+		items[i] = profileItem{p: pr}
+	}
+	p.plist.SetItems(items)
+	return p, nil
+}
+
+func (p LauncherPage) handleLaunched(msg launchedMsg) (tea.Model, tea.Cmd) {
+	p.running = append(p.running, msg.inst)
+	p.waitingPID = msg.inst.PID
+	// In-flight status — no auto-clear timer; terminal events replace it.
+	p.status = fmt.Sprintf("pid=%d port=%d — waiting for /health…", msg.inst.PID, msg.inst.Port)
+	p.statusAt = time.Time{}
+	mgr := p.manager
+	port := msg.inst.Port
+	pid := msg.inst.PID
+	waitCmd := func() tea.Msg {
+		if err := mgr.WaitHealthy(pid, port, 30*time.Second); err != nil {
+			return launchErrMsg{err: fmt.Errorf("pid %d not healthy: %w", pid, err)}
 		}
-		p.profiles = msg.Profiles
-		items := make([]list.Item, len(msg.Profiles))
-		for i, pr := range msg.Profiles {
+		return healthyMsg{pid: pid}
+	}
+	return p, tea.Batch(p.spin.Tick, waitCmd)
+}
+
+func (p LauncherPage) handleHealthy(msg healthyMsg) (tea.Model, tea.Cmd) {
+	p.waitingPID = 0
+	p, fc := p.withStatus(fmt.Sprintf("healthy pid=%d", msg.pid))
+	pid := msg.pid
+	return p, tea.Batch(fc, func() tea.Msg { return SwitchToMonitorMsg{PID: pid} })
+}
+
+func (p LauncherPage) handleLaunchErr(msg launchErrMsg) (tea.Model, tea.Cmd) {
+	p.waitingPID = 0
+	p, fc := p.withStatus(friendlyLaunchError(msg.err))
+	return p, fc
+}
+
+func (p LauncherPage) handleSpinnerTick(msg spinner.TickMsg) (tea.Model, tea.Cmd) {
+	if p.waitingPID == 0 {
+		return p, nil
+	}
+	updated, cmd := p.spin.Update(msg)
+	p.spin = updated
+	return p, cmd
+}
+
+func (p LauncherPage) handleFlashClear(msg flashClearMsg) (tea.Model, tea.Cmd) {
+	if msg.tag == "launcher" && msg.at.Equal(p.statusAt) {
+		p.status = ""
+		p.statusAt = time.Time{}
+	}
+	return p, nil
+}
+
+func (p LauncherPage) handleLaunchProfile(msg LaunchProfileMsg) (tea.Model, tea.Cmd) {
+	if p.manager == nil {
+		p, fc := p.withStatus("launch failed: process manager unavailable")
+		return p, fc
+	}
+	selected, err := p.store.Get(msg.ID)
+	if err != nil {
+		p, fc := p.withStatus("launch failed: " + err.Error())
+		return p, fc
+	}
+	// Refresh the in-memory list so the user sees the profile they
+	// just launched ranked correctly. Best effort — failure here
+	// only affects display, not the launch itself.
+	if got, lerr := p.store.List(); lerr == nil {
+		p.profiles = got
+		items := make([]list.Item, len(got))
+		for i, pr := range got {
 			items[i] = profileItem{p: pr}
+			if pr.ID == msg.ID {
+				p.plist.Select(i)
+			}
 		}
 		p.plist.SetItems(items)
-		return p, nil
-
-	// ---- Phase 3: Launch lifecycle (launched → wait healthy → done/err) ----
-	case launchedMsg:
-		p.running = append(p.running, msg.inst)
-		p.waitingPID = msg.inst.PID
-		// In-flight status — no auto-clear timer; terminal events replace it.
-		p.status = fmt.Sprintf("pid=%d port=%d — waiting for /health…", msg.inst.PID, msg.inst.Port)
-		p.statusAt = time.Time{}
-		mgr := p.manager
-		port := msg.inst.Port
-		pid := msg.inst.PID
-		waitCmd := func() tea.Msg {
-			if err := mgr.WaitHealthy(pid, port, 30*time.Second); err != nil {
-				return launchErrMsg{err: fmt.Errorf("pid %d not healthy: %w", pid, err)}
-			}
-			return healthyMsg{pid: pid}
-		}
-		return p, tea.Batch(p.spin.Tick, waitCmd)
-
-	case healthyMsg:
-		p.waitingPID = 0
-		p, fc := p.withStatus(fmt.Sprintf("healthy pid=%d", msg.pid))
-		pid := msg.pid
-		return p, tea.Batch(fc, func() tea.Msg { return SwitchToMonitorMsg{PID: pid} })
-
-	case launchErrMsg:
-		p.waitingPID = 0
-		p, fc := p.withStatus(friendlyLaunchError(msg.err))
-		return p, fc
-
-	// ---- Phase 4: Spinner animation while waiting for health check ----
-	case spinner.TickMsg:
-		if p.waitingPID == 0 {
-			return p, nil
-		}
-		updated, cmd := p.spin.Update(msg)
-		p.spin = updated
-		return p, cmd
-
-	// ---- Phase 5: Flash / status clear ----
-	case flashClearMsg:
-		if msg.tag == "launcher" && msg.at.Equal(p.statusAt) {
-			p.status = ""
-			p.statusAt = time.Time{}
-		}
-		return p, nil
-
-	// ---- Phase 6: External launch request (e.g. from ProfilesPage via [L]) ----
-	case LaunchProfileMsg:
-		if p.manager == nil {
-			p, fc := p.withStatus("launch failed: process manager unavailable")
-			return p, fc
-		}
-		selected, err := p.store.Get(msg.ID)
-		if err != nil {
-			p, fc := p.withStatus("launch failed: " + err.Error())
-			return p, fc
-		}
-		// Refresh the in-memory list so the user sees the profile they
-		// just launched ranked correctly. Best effort — failure here
-		// only affects display, not the launch itself.
-		if got, lerr := p.store.List(); lerr == nil {
-			p.profiles = got
-			items := make([]list.Item, len(got))
-			for i, pr := range got {
-				items[i] = profileItem{p: pr}
-				if pr.ID == msg.ID {
-					p.plist.Select(i)
-				}
-			}
-			p.plist.SetItems(items)
-		}
-		return p, p.launchProfileCmd(selected)
-
-	// ---- Phase 7: Post-confirm kill action ----
-	case launcherKillConfirmedMsg:
-		var fc tea.Cmd
-		p, fc = p.performKill(msg.pid)
-		return p, fc
-
-	// ---- Phase 8: Key routing ----
-	case tea.KeyMsg:
-		if p.killConfirm.Active() {
-			return p.updateConfirmKill(msg)
-		}
-		switch msg.String() {
-		case "b":
-			p.background = !p.background
-			return p, nil
-		case "k":
-			if len(p.running) == 0 || p.manager == nil {
-				return p, nil
-			}
-			return p.askConfirmKill(p.running[len(p.running)-1].PID)
-		case "r":
-			return p, loadProfilesCmd(p.store)
-		case "enter":
-			it, ok := p.plist.SelectedItem().(profileItem)
-			if !ok || p.manager == nil {
-				return p, nil
-			}
-			return p, p.launchProfileCmd(it.p)
-		}
 	}
+	return p, p.launchProfileCmd(selected)
+}
 
-	// Forward non-key messages to the confirm form so huh's internal Cmd→Msg
-	// loop (initial focus, validation, button reveal) lands.
+func (p LauncherPage) handleKillConfirmed(msg launcherKillConfirmedMsg) (tea.Model, tea.Cmd) {
+	var fc tea.Cmd
+	p, fc = p.performKill(msg.pid)
+	return p, fc
+}
+
+func (p LauncherPage) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if p.killConfirm.Active() {
+		return p.updateConfirmKill(msg)
+	}
+	switch msg.String() {
+	case "b":
+		p.background = !p.background
+		return p, nil
+	case "k":
+		if len(p.running) == 0 || p.manager == nil {
+			return p, nil
+		}
+		return p.askConfirmKill(p.running[len(p.running)-1].PID)
+	case "r":
+		return p, loadProfilesCmd(p.store)
+	case "enter":
+		it, ok := p.plist.SelectedItem().(profileItem)
+		if !ok || p.manager == nil {
+			return p, nil
+		}
+		return p, p.launchProfileCmd(it.p)
+	}
+	updatedList, cmd := p.plist.Update(msg)
+	p.plist = updatedList
+	return p, cmd
+}
+
+// forwardToConfirms routes non-key messages to the active confirm form so
+// huh's internal Cmd→Msg loop (initial focus, validation, button reveal)
+// lands. When no confirm is active, the message falls through to the
+// underlying list so its built-in handlers (filter ticks etc.) still run.
+func (p LauncherPage) forwardToConfirms(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if p.killConfirm.Active() {
 		var cmd tea.Cmd
 		p.killConfirm, cmd = p.killConfirm.Update(msg)
 		return p, cmd
 	}
-
 	updatedList, cmd := p.plist.Update(msg)
 	p.plist = updatedList
 	return p, cmd
