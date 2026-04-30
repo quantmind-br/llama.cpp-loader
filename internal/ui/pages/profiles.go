@@ -259,11 +259,11 @@ func (p ProfilesPage) forwardNonKey(msg tea.Msg) (tea.Model, tea.Cmd) {
 type profileDeleteConfirmedMsg struct{ id string }
 
 func (p ProfilesPage) View() string {
-	if p.editor.Active() {
-		return p.editor.View()
-	}
 	if p.picker.active {
 		return p.picker.picker.View()
+	}
+	if p.editor.Active() {
+		return p.editor.View()
 	}
 	if p.deleteConfirm.Active() {
 		return p.deleteConfirm.View()
