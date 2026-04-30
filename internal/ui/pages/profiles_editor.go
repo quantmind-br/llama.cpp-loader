@@ -44,6 +44,46 @@ type profileDraft struct {
 	isNew       bool
 }
 
+// toProfile maps the editor draft to a domain.Profile. Always sets
+// ngl/ctx-size/port (zero on parse fail) so save and live preview produce
+// the same shape. Caller owns ID generation and Meta preservation.
+func (d *profileDraft) toProfile() domain.Profile {
+	if d == nil {
+		return domain.Profile{}
+	}
+	ngl, _ := strconv.Atoi(d.NGL)
+	ctx, _ := strconv.Atoi(d.CtxSize)
+	port, _ := strconv.Atoi(d.Port)
+	args := map[string]any{
+		"ngl":      float64(ngl),
+		"ctx-size": float64(ctx),
+		"port":     float64(port),
+	}
+	if d.FlashAttn != "" {
+		args["flash-attn"] = d.FlashAttn
+	}
+	if v, err := strconv.Atoi(d.BatchSize); err == nil {
+		args["batch-size"] = float64(v)
+	}
+	if v, err := strconv.Atoi(d.UBatchSize); err == nil {
+		args["ubatch-size"] = float64(v)
+	}
+	if d.CacheTypeK != "" {
+		args["cache-type-k"] = d.CacheTypeK
+	}
+	if d.CacheTypeV != "" {
+		args["cache-type-v"] = d.CacheTypeV
+	}
+	return domain.Profile{
+		ID:          d.ID,
+		Name:        d.Name,
+		Description: d.Description,
+		Model:       d.Model,
+		Args:        args,
+		Launch:      domain.LaunchConfig{DefaultBackground: true},
+	}
+}
+
 func argString(v any) string {
 	switch t := v.(type) {
 	case nil:

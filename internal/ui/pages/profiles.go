@@ -3,7 +3,6 @@ package pages
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -420,38 +419,7 @@ func (p ProfilesPage) commitDraft() (tea.Model, tea.Cmd) {
 	if d.ID == "" {
 		d.ID = domain.Slugify(d.Name)
 	}
-	ngl, _ := strconv.Atoi(d.NGL)
-	ctx, _ := strconv.Atoi(d.CtxSize)
-	port, _ := strconv.Atoi(d.Port)
-
-	args := map[string]any{
-		"ngl":      float64(ngl),
-		"ctx-size": float64(ctx),
-		"port":     float64(port),
-	}
-	if d.FlashAttn != "" {
-		args["flash-attn"] = d.FlashAttn
-	}
-	if v, err := strconv.Atoi(d.BatchSize); err == nil {
-		args["batch-size"] = float64(v)
-	}
-	if v, err := strconv.Atoi(d.UBatchSize); err == nil {
-		args["ubatch-size"] = float64(v)
-	}
-	if d.CacheTypeK != "" {
-		args["cache-type-k"] = d.CacheTypeK
-	}
-	if d.CacheTypeV != "" {
-		args["cache-type-v"] = d.CacheTypeV
-	}
-	pr := domain.Profile{
-		ID:          d.ID,
-		Name:        d.Name,
-		Description: d.Description,
-		Model:       d.Model,
-		Args:        args,
-		Launch:      domain.LaunchConfig{DefaultBackground: true},
-	}
+	pr := d.toProfile()
 
 	// Preserve existing meta when editing.
 	if !d.isNew {
@@ -470,43 +438,10 @@ func (p ProfilesPage) commitDraft() (tea.Model, tea.Cmd) {
 	return p, p.loadCmd()
 }
 
-// previewProfile builds a Profile from the current draft (without saving) for
-// the validator. Mirrors commitDraft's mapping but is allocation-only.
+// previewProfile builds a Profile from the current draft (without saving)
+// for the validator.
 func (p ProfilesPage) previewProfile() domain.Profile {
-	if p.draft == nil {
-		return domain.Profile{}
-	}
-	d := p.draft
-	args := map[string]any{}
-	if d.FlashAttn != "" {
-		args["flash-attn"] = d.FlashAttn
-	}
-	if v, err := strconv.Atoi(d.NGL); err == nil {
-		args["ngl"] = float64(v)
-	}
-	if v, err := strconv.Atoi(d.CtxSize); err == nil {
-		args["ctx-size"] = float64(v)
-	}
-	if v, err := strconv.Atoi(d.BatchSize); err == nil {
-		args["batch-size"] = float64(v)
-	}
-	if v, err := strconv.Atoi(d.UBatchSize); err == nil {
-		args["ubatch-size"] = float64(v)
-	}
-	if v, err := strconv.Atoi(d.Port); err == nil {
-		args["port"] = float64(v)
-	}
-	if d.CacheTypeK != "" {
-		args["cache-type-k"] = d.CacheTypeK
-	}
-	if d.CacheTypeV != "" {
-		args["cache-type-v"] = d.CacheTypeV
-	}
-	return domain.Profile{
-		ID:    d.ID,
-		Model: d.Model,
-		Args:  args,
-	}
+	return p.draft.toProfile()
 }
 
 func (p ProfilesPage) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
